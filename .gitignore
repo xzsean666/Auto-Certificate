@@ -1,0 +1,26 @@
+# Git ignore rules for ngx-cert-manager
+
+# Backup directories
+.backup/
+*.backup
+*.bak
+
+# Temporary files
+*.tmp
+*.swp
+*~
+.DS_Store
+
+# Log files
+*.log
+/var/log/ngx-cert-manager.log
+.ngx-cert-manager/
+
+# Test output & temp directories
+tests/tmp/
+tests/fixtures/tmp/
+dist/
+
+# OS / Editor artifacts
+.vscode/
+.idea/

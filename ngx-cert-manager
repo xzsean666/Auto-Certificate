@@ -1,0 +1,575 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# ngx-cert-manager
+# Nginx & Let's Encrypt 一体化运维管理套件 (Unified CLI Entrypoint & TUI Suite)
+# ==============================================================================
+
+set -eo pipefail
+
+# 1. Resolve Runtime Directory & Resource Locations (Dynamic Self-Adaptive Path)
+# Supports both:
+#  A) Standalone local git checkout repository execution (./ngx-cert-manager)
+#  B) System-wide installation (/usr/bin/ngx-cert-manager, /usr/share/ngx-cert-manager)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+CURRENT_BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+# Check if running in local source repository or installed system location
+if [ -f "$CURRENT_BIN_DIR/lib/ui.sh" ] && [ -d "$CURRENT_BIN_DIR/templates" ]; then
+    # Local Git Repository Mode
+    export NGX_APP_ROOT="$CURRENT_BIN_DIR"
+    export NGX_LIB_DIR="$CURRENT_BIN_DIR/lib"
+    export NGX_TEMPLATES_DIR="$CURRENT_BIN_DIR/templates"
+    export NGX_CONFIG_FILE="${NGX_CONFIG_FILE:-$CURRENT_BIN_DIR/config.env}"
+elif [ -d "/usr/share/ngx-cert-manager/lib" ]; then
+    # System Installed Mode (/usr/share/ngx-cert-manager)
+    export NGX_APP_ROOT="/usr/share/ngx-cert-manager"
+    export NGX_LIB_DIR="/usr/share/ngx-cert-manager/lib"
+    export NGX_TEMPLATES_DIR="/usr/share/ngx-cert-manager/templates"
+    export NGX_CONFIG_FILE="${NGX_CONFIG_FILE:-/etc/ngx-cert-manager/config.env}"
+    [ ! -f "$NGX_CONFIG_FILE" ] && export NGX_CONFIG_FILE="/usr/share/ngx-cert-manager/config.env"
+elif [ -d "/usr/local/share/ngx-cert-manager/lib" ]; then
+    # Local System Installed Mode (/usr/local/share/ngx-cert-manager)
+    export NGX_APP_ROOT="/usr/local/share/ngx-cert-manager"
+    export NGX_LIB_DIR="/usr/local/share/ngx-cert-manager/lib"
+    export NGX_TEMPLATES_DIR="/usr/local/share/ngx-cert-manager/templates"
+    export NGX_CONFIG_FILE="${NGX_CONFIG_FILE:-/etc/ngx-cert-manager/config.env}"
+    [ ! -f "$NGX_CONFIG_FILE" ] && export NGX_CONFIG_FILE="/usr/local/share/ngx-cert-manager/config.env"
+else
+    # Fallback to current script directory
+    export NGX_APP_ROOT="$CURRENT_BIN_DIR"
+    export NGX_LIB_DIR="$CURRENT_BIN_DIR/lib"
+    export NGX_TEMPLATES_DIR="$CURRENT_BIN_DIR/templates"
+    export NGX_CONFIG_FILE="${NGX_CONFIG_FILE:-$CURRENT_BIN_DIR/config.env}"
+fi
+
+# 2. Source Configuration and Modules
+[ -f "$NGX_CONFIG_FILE" ] && source "$NGX_CONFIG_FILE"
+[ -f "$NGX_LIB_DIR/ui.sh" ] && source "$NGX_LIB_DIR/ui.sh"
+[ -f "$NGX_LIB_DIR/env.sh" ] && source "$NGX_LIB_DIR/env.sh"
+[ -f "$NGX_LIB_DIR/nginx.sh" ] && source "$NGX_LIB_DIR/nginx.sh"
+[ -f "$NGX_LIB_DIR/domain.sh" ] && source "$NGX_LIB_DIR/domain.sh"
+[ -f "$NGX_LIB_DIR/cert.sh" ] && source "$NGX_LIB_DIR/cert.sh"
+[ -f "$NGX_LIB_DIR/proxy.sh" ] && source "$NGX_LIB_DIR/proxy.sh"
+[ -f "$NGX_LIB_DIR/systemd.sh" ] && source "$NGX_LIB_DIR/systemd.sh"
+[ -f "$NGX_LIB_DIR/remote.sh" ] && source "$NGX_LIB_DIR/remote.sh"
+
+# Show Help Information
+show_help() {
+    cat << EOF
+ngx-cert-manager - Nginx & Let's Encrypt 一体化运维管理套件 v${NGX_CERT_MANAGER_VERSION:-1.0.0}
+
+使用方法:
+  ngx-cert-manager [选项] [子命令] [参数...]
+  (亦可使用简短别名: ngx-cert [子命令] [参数...])
+
+选项 (Global Options):
+  -h, --help                显示本帮助信息并退出
+  -v, --version             显示当前版本信息并退出
+  --ssh <user@host[:port]>  通过无痕 SSH 远程代理执行运维操作
+
+子命令 (Subcommands):
+  site                      反向代理站点管理
+    site add                新增并配置 SSL 反向代理站点
+      --domain <domain>     目标域名 (必填)
+      --upstream <target>   后端上游地址 (必填, 如: 127.0.0.1:3000 或 unix:/run/app.sock:)
+      --email <email>       Let's Encrypt 登记联系邮箱
+      --hsts                启用 HSTS 安全头部 (默认: 开启)
+      --no-hsts             禁用 HSTS 安全头部
+      --body-size <size>    客户端请求体上限 (默认: 50m)
+      --ws                  启用 WebSocket 协议升级支持 (默认: 开启)
+      --no-ws               禁用 WebSocket 协议升级支持
+      --skip-dns-check      跳过 DNS 解析预检
+      --staging             使用 Let's Encrypt Staging 沙箱测试环境
+      --no-ssl, --http-only 仅配置 HTTP 80 端口反代 (适用于 Cloudflare Flexible SSL 代理或内网)
+    site list               列出所有受管反向代理站点
+    site get                查看指定站点的 Nginx 配置文件
+      --domain <domain>     目标域名
+    site delete             删除指定站点反向代理配置
+      --domain <domain>     目标域名
+      --delete-cert         同时吊销并清理对应 SSL 证书
+
+  cert                      SSL 证书全生命周期管理
+    cert issue              申请签发 Let's Encrypt 证书
+      --domain <domain>     目标域名 (必填)
+      --email <email>       联系邮箱 (必填)
+      --webroot             使用 Webroot 零中断模式 (默认)
+      --standalone          使用 Standalone 独立模式 (兜底)
+      --staging             使用 Staging 测试环境
+      --force               强制重新签发 (即使未到期)
+    cert list               查看所有受管证书大盘与剩余有效期
+    cert renew              执行自动化续期扫描
+      --force               强制全部续期
+      --dry-run             模拟演练测试续期
+    cert revoke             吊销并清理证书
+      --domain <domain>     目标域名
+
+  nginx                     Nginx 服务与全局穿透规则运维
+    nginx status            查看 Nginx 安装与运行状态
+    nginx install           通过包管理器安装 Nginx
+    nginx test              检查 Nginx 配置文件语法
+    nginx reload            平滑重载 Nginx (带严格前置自检)
+    nginx start             启动 Nginx 服务
+    nginx stop              停止 Nginx 服务
+    nginx restart           重启 Nginx 服务
+    nginx bootstrap         初始化全局 ACME 穿透与 WebSocket Map 规则
+
+  timer                     自动化续期守护与定时任务
+    timer setup             注册并启用续期守护 (Systemd Timer / Cron)
+    timer status            查看续期定时器运行状态
+    timer trigger           立即触发单次续期测试
+    timer logs              查看证书自动续期审计日志
+
+  diagnose                  系统网络、IPv6、DNS 与端口占用综合体检
+
+示例 (Examples):
+  ngx-cert-manager                                      # 启动 TUI 交互式控制台
+  ngx-cert-manager site add --domain api.test.com --upstream 127.0.0.1:8080 --email admin@test.com
+  ngx-cert-manager site list
+  ngx-cert-manager cert list
+  ngx-cert-manager diagnose
+  ngx-cert-manager --ssh root@192.168.1.50 site list   # 远程免安装运维
+EOF
+}
+
+# Subcommand: diagnose
+cmd_diagnose() {
+    ui_banner "$(domain_get_public_ipv4 2>/dev/null || echo "127.0.0.1")" "${OS_NAME}"
+    ui_section "1. 系统与运行环境"
+    env_summary
+
+    ui_section "2. Nginx 服务状态"
+    nginx_status_summary
+    if nginx_is_installed; then
+        nginx_test || true
+    fi
+
+    ui_section "3. 网络与端口占用检测"
+    local public_v4 public_v6
+    public_v4="$(domain_get_public_ipv4 2>/dev/null || echo "无法获取")"
+    public_v6="$(domain_get_public_ipv6 2>/dev/null || echo "无公网 IPv6")"
+    echo "公网 IPv4: $public_v4"
+    echo "公网 IPv6: $public_v6"
+
+    ui_info "检查 80 端口占用情况..."
+    domain_check_port_80 || true
+
+    ui_section "4. 定时续期守护状态"
+    echo "守护状态: $(timer_status_summary)"
+}
+
+# Subcommand: site
+cmd_site() {
+    local action="${1:-list}"
+    shift || true
+
+    case "$action" in
+        list)
+            proxy_list_sites
+            ;;
+        get)
+            local domain=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) domain="$2"; shift 2 ;;
+                    --domain=*) domain="${1#*=}"; shift ;;
+                    *) shift ;;
+                esac
+            done
+            proxy_get_site "$domain"
+            ;;
+        delete)
+            local domain=""
+            local delete_cert=0
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) domain="$2"; shift 2 ;;
+                    --domain=*) domain="${1#*=}"; shift ;;
+                    --delete-cert) delete_cert=1; shift ;;
+                    *) shift ;;
+                esac
+            done
+            proxy_delete_site "$domain" "$delete_cert"
+            ;;
+        add)
+            local domain=""
+            local upstream=""
+            local email=""
+            local hsts="${DEFAULT_ENABLE_HSTS:-1}"
+            local body_size="${DEFAULT_CLIENT_MAX_BODY_SIZE:-50m}"
+            local ws="${DEFAULT_ENABLE_WEBSOCKET:-1}"
+            local skip_dns=0
+            local staging=0
+            local ssl_enabled=1
+
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) domain="$2"; shift 2 ;;
+                    --domain=*) domain="${1#*=}"; shift ;;
+                    --upstream) upstream="$2"; shift 2 ;;
+                    --upstream=*) upstream="${1#*=}"; shift ;;
+                    --email) email="$2"; shift 2 ;;
+                    --email=*) email="${1#*=}"; shift ;;
+                    --hsts) hsts=1; shift ;;
+                    --no-hsts) hsts=0; shift ;;
+                    --body-size) body_size="$2"; shift 2 ;;
+                    --body-size=*) body_size="${1#*=}"; shift ;;
+                    --ws) ws=1; shift ;;
+                    --no-ws) ws=0; shift ;;
+                    --skip-dns-check) skip_dns=1; shift ;;
+                    --staging) staging=1; shift ;;
+                    --no-ssl|--http-only) ssl_enabled=0; shift ;;
+                    --ssl) ssl_enabled=1; shift ;;
+                    *) shift ;;
+                esac
+            done
+
+            proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled"
+            ;;
+        *)
+            ui_error "未知的 site 操作: $action"
+            show_help
+            return 1
+            ;;
+    esac
+}
+
+# Subcommand: cert
+cmd_cert() {
+    local action="${1:-list}"
+    shift || true
+
+    case "$action" in
+        list)
+            cert_list
+            ;;
+        renew)
+            local force=0
+            local dry_run=0
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --force) force=1; shift ;;
+                    --dry-run) dry_run=1; shift ;;
+                    *) shift ;;
+                esac
+            done
+            cert_renew "$force" "$dry_run"
+            ;;
+        revoke)
+            local domain=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) domain="$2"; shift 2 ;;
+                    --domain=*) domain="${1#*=}"; shift ;;
+                    *) shift ;;
+                esac
+            done
+            cert_revoke "$domain"
+            ;;
+        issue)
+            local domain=""
+            local email=""
+            local mode="webroot"
+            local staging=0
+            local force=0
+
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) domain="$2"; shift 2 ;;
+                    --domain=*) domain="${1#*=}"; shift ;;
+                    --email) email="$2"; shift 2 ;;
+                    --email=*) email="${1#*=}"; shift ;;
+                    --webroot) mode="webroot"; shift ;;
+                    --standalone) mode="standalone"; shift ;;
+                    --staging) staging=1; shift ;;
+                    --force) force=1; shift ;;
+                    *) shift ;;
+                esac
+            done
+
+            if [ "$mode" = "standalone" ]; then
+                cert_issue_standalone "$domain" "$email" "$staging"
+            else
+                cert_issue_webroot "$domain" "$email" "$staging" "$force"
+            fi
+            ;;
+        *)
+            ui_error "未知的 cert 操作: $action"
+            show_help
+            return 1
+            ;;
+    esac
+}
+
+# Subcommand: nginx
+cmd_nginx() {
+    local action="${1:-status}"
+    shift || true
+
+    case "$action" in
+        status)
+            nginx_status_summary
+            ;;
+        install)
+            nginx_install
+            ;;
+        test)
+            nginx_test
+            ;;
+        reload)
+            nginx_reload
+            ;;
+        start)
+            nginx_start
+            ;;
+        stop)
+            nginx_stop
+            ;;
+        restart)
+            nginx_restart
+            ;;
+        bootstrap)
+            nginx_bootstrap
+            ;;
+        *)
+            ui_error "未知的 nginx 操作: $action"
+            show_help
+            return 1
+            ;;
+    esac
+}
+
+# Subcommand: timer
+cmd_timer() {
+    local action="${1:-status}"
+    shift || true
+
+    case "$action" in
+        status)
+            systemd_status_timer
+            ;;
+        setup)
+            timer_bootstrap
+            ;;
+        trigger)
+            systemd_trigger_now
+            ;;
+        logs)
+            systemd_view_logs
+            ;;
+        *)
+            ui_error "未知的 timer 操作: $action"
+            show_help
+            return 1
+            ;;
+    esac
+}
+
+# Interactive Wizard: Create Reverse Proxy Site
+tui_wizard_add_site() {
+    ui_section "向导: 快速创建反向代理站点"
+
+    local domain=""
+    while [ -z "$domain" ]; do
+        domain="$(ui_prompt "1. 请输入绑定的域名 (例如: api.example.com)")"
+    done
+
+    local upstream=""
+    while [ -z "$upstream" ]; do
+        upstream="$(ui_prompt "2. 请输入后端上游地址 (例如: 127.0.0.1:3000 或 unix:/run/app.sock:)")"
+    done
+
+    local enable_ssl=1
+    if ! ui_confirm "3. 是否自动配置 HTTPS 与申请 SSL 证书 (若通过 Cloudflare 边缘代理/内网可选 N)?" "Y"; then
+        enable_ssl=0
+    fi
+
+    local email=""
+    local enable_hsts=0
+    local staging=0
+    if [ "$enable_ssl" -eq 1 ]; then
+        email="$(ui_prompt "4. 请输入 Let's Encrypt 联系邮箱" "admin@${domain}")"
+        if ui_confirm "5. 是否开启 HSTS 强制安全防护?" "Y"; then
+            enable_hsts=1
+        fi
+        if ui_confirm "6. 是否使用 Let's Encrypt Staging 沙箱测试环境 (推荐首次调试使用)?" "N"; then
+            staging=1
+        fi
+    fi
+
+    local enable_ws=1
+    if ! ui_confirm "7. 是否启用 WebSocket 协议升级支持?" "Y"; then
+        enable_ws=0
+    fi
+
+    local body_size
+    body_size="$(ui_prompt "8. 客户端请求体大小限制 (client_max_body_size)" "${DEFAULT_CLIENT_MAX_BODY_SIZE:-50m}")"
+
+    echo ""
+    ui_info "配置概要确认:"
+    echo "  - 域名: $domain"
+    echo "  - 上游: $(proxy_normalize_upstream "$upstream")"
+    echo "  - SSL 模式: $([ "$enable_ssl" -eq 1 ] && echo "开启 HTTPS (Let's Encrypt)" || echo "纯 HTTP 80 端口反代")"
+    [ "$enable_ssl" -eq 1 ] && echo "  - 邮箱: $email"
+    [ "$enable_ssl" -eq 1 ] && echo "  - HSTS: $([ "$enable_hsts" -eq 1 ] && echo "开启" || echo "关闭")"
+    echo "  - WebSocket: $([ "$enable_ws" -eq 1 ] && echo "开启" || echo "关闭")"
+    echo "  - 上传限制: $body_size"
+    [ "$enable_ssl" -eq 1 ] && echo "  - 环境: $([ "$staging" -eq 1 ] && echo "Staging 沙箱" || echo "生产环境")"
+    echo ""
+
+    if ui_confirm "确认立即开始自动化部署?" "Y"; then
+        proxy_add_site "$domain" "$upstream" "$email" "$enable_hsts" "$body_size" "$enable_ws" "0" "$staging" "0" "$enable_ssl"
+    else
+        ui_warn "已取消部署。"
+    fi
+}
+
+# Interactive TUI Main Loop
+tui_main_loop() {
+    while true; do
+        clear 2>/dev/null || true
+        local s_ip s_os
+        s_ip="$(domain_get_public_ipv4 2>/dev/null || echo "127.0.0.1")"
+        s_os="${OS_NAME}"
+
+        ui_banner "$s_ip" "$s_os"
+
+        # Dashboard Top Overview
+        local ngx_stat
+        ngx_stat="$(nginx_status_summary)"
+        local timer_stat
+        timer_stat="$(timer_status_summary)"
+
+        echo "【Nginx 状态】: $ngx_stat"
+        echo "【自动 续期】: $timer_stat"
+        echo "--------------------------------------------------------------------------------"
+        echo " 1. [一键向导] 域名预检 + 签发证书 + 配置 SSL 反代 (零停机)"
+        echo " 2. [站点管理] 查看所有代理站点 / 新增 / 查看配置 / 删除站点"
+        echo " 3. [证书中心] 证书列表大盘 / 手动签发 / 强制续期 / 吊销证书"
+        echo " 4. [Nginx运维] 安装或检测 / 语法校验 / 平滑重载 / 启停控制 / 全局规则注入"
+        echo " 5. [定时守护] 注册续期定时器 / 查看守护状态 / 立即触发测试 / 查看审计日志"
+        echo " 6. [系统体检] 网络 IP 嗅探 / IPv6 支持分析 / 80 端口占用排查 / 综合体检"
+        echo " 0. 退出管理套件"
+        echo "================================================================================"
+
+        local choice
+        choice="$(ui_prompt "请输入操作编号 [0-6]" "1")"
+
+        case "$choice" in
+            1)
+                tui_wizard_add_site
+                ;;
+            2)
+                proxy_list_sites
+                ;;
+            3)
+                cert_list
+                ;;
+            4)
+                ui_section "Nginx 运维控制"
+                nginx_status_summary
+                if ui_confirm "是否执行平滑重载 (reload)?" "Y"; then
+                    nginx_reload || true
+                fi
+                ;;
+            5)
+                systemd_status_timer || true
+                if ui_confirm "是否立即触发一次测试续期?" "N"; then
+                    systemd_trigger_now || true
+                fi
+                ;;
+            6)
+                cmd_diagnose
+                ;;
+            0)
+                ui_info "感谢使用 ngx-cert-manager，再见！"
+                exit 0
+                ;;
+            *)
+                ui_warn "无效的操作编号，请重新选择。"
+                ;;
+        esac
+
+        echo ""
+        read -r -p "按 Enter 回车键返回主菜单..." || true
+    done
+}
+
+# Main Entrypoint Dispatcher
+main() {
+    # Check if --ssh parameter is passed
+    if [ "$#" -ge 2 ] && [ "$1" = "--ssh" ]; then
+        local ssh_target="$2"
+        shift 2
+        remote_execute "$ssh_target" "$@"
+        exit $?
+    fi
+
+    # Global flags
+    if [ "$#" -gt 0 ]; then
+        case "$1" in
+            -h|--help|help)
+                show_help
+                exit 0
+                ;;
+            -v|--version|version)
+                echo "ngx-cert-manager v${NGX_CERT_MANAGER_VERSION:-1.0.0}"
+                exit 0
+                ;;
+            site)
+                shift
+                cmd_site "$@"
+                exit $?
+                ;;
+            cert)
+                shift
+                cmd_cert "$@"
+                exit $?
+                ;;
+            nginx)
+                shift
+                cmd_nginx "$@"
+                exit $?
+                ;;
+            timer)
+                shift
+                cmd_timer "$@"
+                exit $?
+                ;;
+            diagnose)
+                shift
+                cmd_diagnose "$@"
+                exit $?
+                ;;
+            remote)
+                shift
+                if [ "$#" -lt 1 ]; then
+                    ui_error "请指定远程主机: ngx-cert-manager remote <user@host> [subcommand...]"
+                    exit 1
+                fi
+                local target="$1"
+                shift
+                remote_execute "$target" "$@"
+                exit $?
+                ;;
+            *)
+                ui_error "未知的命令或选项: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    fi
+
+    # No arguments passed: If terminal is interactive, enter TUI, else show help
+    if [ -t 0 ]; then
+        tui_main_loop
+    else
+        show_help
+    fi
+}
+
+main "$@"
