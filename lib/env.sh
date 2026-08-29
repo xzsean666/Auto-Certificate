@@ -216,6 +216,24 @@ pkg_install() {
     return 0
 }
 
+# Ensure base essential utilities (curl, openssl, tar) are installed
+env_ensure_base_deps() {
+    if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+        return 0
+    fi
+
+    local missing=()
+    command -v curl >/dev/null 2>&1 || missing+=("curl")
+    command -v openssl >/dev/null 2>&1 || missing+=("openssl")
+    command -v tar >/dev/null 2>&1 || missing+=("tar")
+
+    if [ "${#missing[@]}" -gt 0 ]; then
+        ui_info "检测到缺少基础命令行工具: ${missing[*]}，正在自动安装..."
+        pkg_update || true
+        pkg_install "${missing[@]}" || true
+    fi
+}
+
 # 4. Probe IPv6 Capability (Core Anti-Crash Mechanism)
 # Checks if kernel allows socket binding to [::]
 env_check_ipv6() {

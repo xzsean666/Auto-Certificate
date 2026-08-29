@@ -335,6 +335,7 @@ nginx_setup_websocket_map() {
 
 # 12. Full Bootstrap for Nginx Environment
 nginx_bootstrap() {
+    env_ensure_base_deps || true
     if ! nginx_is_installed; then
         ui_info "未检测到 Nginx，正在自动安装..."
         nginx_install || true
