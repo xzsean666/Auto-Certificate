@@ -264,7 +264,42 @@ proxy_add_site() {
             fi
         fi
 
+        # Pre-provision temporary dedicated HTTP-01 challenge route for domain
+        local conf_dir="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+        local site_conf="${conf_dir}/${domain}.conf"
+        local temp_conf_created=0
+        if [ ! -f "$site_conf" ]; then
+            ui_info "正在为 ${domain} 预置 HTTP-01 验证穿透通道..."
+            local webroot="${ACME_WEBROOT_DIR:-/var/www/certbot}"
+            cat <<EOF > "$site_conf"
+server {
+    listen 80;
+    server_name ${domain};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root ${webroot};
+        default_type "text/plain";
+        try_files \$uri =404;
+    }
+
+    location / {
+        return 404;
+    }
+}
+EOF
+            if nginx_reload; then
+                temp_conf_created=1
+            else
+                rm -f "$site_conf"
+                nginx_reload || true
+            fi
+        fi
+
         if ! cert_issue_webroot "$domain" "$email" "$staging"; then
+            if [ "$temp_conf_created" -eq 1 ]; then
+                rm -f "$site_conf"
+                nginx_reload || true
+            fi
             ui_error "证书签发失败，终止配置反向代理。"
             return 1
         fi
@@ -290,6 +325,7 @@ proxy_add_site() {
 
 # 5. List All Active Proxy Sites
 proxy_list_sites() {
+    nginx_detect_paths
     local conf_dir="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
 
     ui_section "当前受管反向代理站点列表"
@@ -357,6 +393,7 @@ proxy_list_sites() {
 
 # 6. Get Site Config Details
 proxy_get_site() {
+    nginx_detect_paths
     local domain="$1"
     local conf_file="${NGINX_CONF_DIR:-/etc/nginx/conf.d}/${domain}.conf"
 
@@ -377,6 +414,7 @@ proxy_get_site() {
 
 # 7. Delete Site Configuration
 proxy_delete_site() {
+    nginx_detect_paths
     local domain="$1"
     local delete_cert="${2:-0}"
     local conf_file="${NGINX_CONF_DIR:-/etc/nginx/conf.d}/${domain}.conf"

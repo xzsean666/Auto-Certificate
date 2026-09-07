@@ -227,11 +227,48 @@ nginx_restart() {
     nginx_start
 }
 
+# 7.5 Detect Nginx Paths (Main Configuration and Vhost Directory)
+nginx_detect_paths() {
+    # 1. Detect NGINX_MAIN_CONF if not set or default /etc/nginx/nginx.conf does not exist
+    if [ -z "${NGINX_MAIN_CONF:-}" ] || { [ "${NGINX_MAIN_CONF}" = "/etc/nginx/nginx.conf" ] && [ ! -f "/etc/nginx/nginx.conf" ]; }; then
+        if nginx_is_installed; then
+            local detected_main=""
+            detected_main="$("${NGINX_BIN:-nginx}" -t 2>&1 | grep -oP 'configuration file \K[^ ]+(?= syntax)' | head -n 1 || true)"
+            if [ -n "$detected_main" ] && [ -f "$detected_main" ]; then
+                export NGINX_MAIN_CONF="$detected_main"
+            fi
+        fi
+
+        if [ ! -f "${NGINX_MAIN_CONF:-}" ]; then
+            for candidate in /etc/nginx/nginx.conf /usr/local/nginx/conf/nginx.conf /www/server/nginx/conf/nginx.conf; do
+                if [ -f "$candidate" ]; then
+                    export NGINX_MAIN_CONF="$candidate"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    # 2. Detect NGINX_CONF_DIR if not set or default /etc/nginx/conf.d does not exist
+    if [ -f "${NGINX_MAIN_CONF:-}" ]; then
+        if [ -z "${NGINX_CONF_DIR:-}" ] || { [ "${NGINX_CONF_DIR}" = "/etc/nginx/conf.d" ] && [ ! -d "/etc/nginx/conf.d" ]; }; then
+            local inc_dir=""
+            inc_dir="$(grep -oP 'include\s+\K[^;]+(?=/\*\.conf;)' "$NGINX_MAIN_CONF" 2>/dev/null | grep -v -E '(tcp|stream)' | head -n 1 || true)"
+            if [ -n "$inc_dir" ] && [ -d "$inc_dir" ]; then
+                export NGINX_CONF_DIR="$inc_dir"
+                export NGINX_BACKUP_DIR="${NGINX_CONF_DIR}/.backup"
+            fi
+        fi
+    fi
+}
+
 # 8. Ensure essential directories exist
 nginx_ensure_dirs() {
+    nginx_detect_paths
     local webroot="${ACME_WEBROOT_DIR:-/var/www/certbot}"
     local conf_dir="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
     local backup_dir="${NGINX_BACKUP_DIR:-/etc/nginx/conf.d/.backup}"
+    local log_dir="${NGINX_LOG_DIR:-/var/log/nginx}"
 
     if [ ! -d "$webroot" ]; then
         ui_info "创建 ACME Webroot 穿透验证目录: $webroot"
@@ -247,10 +284,16 @@ nginx_ensure_dirs() {
         mkdir -p "$backup_dir" 2>/dev/null || true
         chmod 700 "$backup_dir" 2>/dev/null || true
     fi
+
+    if [ ! -d "$log_dir" ]; then
+        mkdir -p "$log_dir" 2>/dev/null || true
+        chmod 755 "$log_dir" 2>/dev/null || true
+    fi
 }
 
 # 9. Ensure nginx.conf includes conf.d/*.conf
 nginx_ensure_include_conf_d() {
+    nginx_detect_paths
     local main_conf="${NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}"
     local conf_dir="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
 
@@ -259,9 +302,11 @@ nginx_ensure_include_conf_d() {
         return 0
     fi
 
-    # Check if include conf.d/*.conf already exists in main conf
-    if grep -E "include[[:space:]]+.*conf\.d/\*\.conf;" "$main_conf" >/dev/null 2>&1; then
-        ui_debug "Nginx 主配置已包含 conf.d/*.conf 引入规则。"
+    # Check if include conf_dir/*.conf already exists in main conf
+    local escaped_conf_dir
+    escaped_conf_dir="$(printf '%s\n' "$conf_dir" | sed 's/[][\/.^$*]/\\&/g')"
+    if grep -E "include[[:space:]]+.*(${escaped_conf_dir}|conf\.d)/\*\.conf;" "$main_conf" >/dev/null 2>&1; then
+        ui_debug "Nginx 主配置已包含 ${conf_dir}/*.conf 引入规则。"
         return 0
     fi
 
@@ -288,6 +333,7 @@ nginx_ensure_include_conf_d() {
 
 # 10. Setup Global ACME Webroot Interception Rule
 nginx_setup_global_acme() {
+    nginx_detect_paths
     local tpl_dir="${NGX_TEMPLATES_DIR:-$_SCRIPT_DIR/../templates}"
     local tpl_file="${tpl_dir}/acme-global.conf.tpl"
     local target_file="${NGINX_CONF_DIR:-/etc/nginx/conf.d}/000-default-acme.conf"
@@ -298,6 +344,14 @@ nginx_setup_global_acme() {
     if [ ! -f "$tpl_file" ]; then
         ui_error "未找到模板文件: $tpl_file"
         return 1
+    fi
+
+    # Check if another default server block already exists in conf dir
+    if [ -d "${NGINX_CONF_DIR:-/etc/nginx/conf.d}" ]; then
+        if grep -rnE "server_name[[:space:]]+_;" "${NGINX_CONF_DIR}" 2>/dev/null | grep -v '000-default-acme.conf' >/dev/null; then
+            ui_info "检测到已有站点包含默认主机规则，跳过注入全局默认主机避免冲突。"
+            return 0
+        fi
     fi
 
     local ipv6_listen=""
@@ -316,6 +370,7 @@ nginx_setup_global_acme() {
 
 # 11. Setup Global WebSocket Upgrade Map
 nginx_setup_websocket_map() {
+    nginx_detect_paths
     local tpl_dir="${NGX_TEMPLATES_DIR:-$_SCRIPT_DIR/../templates}"
     local tpl_file="${tpl_dir}/websocket-map.conf.tpl"
     local target_file="${NGINX_CONF_DIR:-/etc/nginx/conf.d}/000-websocket-map.conf"
@@ -327,6 +382,21 @@ nginx_setup_websocket_map() {
         return 1
     fi
 
+    # Check if connection_upgrade map is already defined elsewhere in nginx configuration
+    if [ -d "${NGINX_CONF_DIR:-/etc/nginx/conf.d}" ]; then
+        if grep -rq "connection_upgrade" "${NGINX_CONF_DIR}" 2>/dev/null; then
+            ui_info "检测到已存在 connection_upgrade 映射配置，跳过重复写入以避免冲突。"
+            return 0
+        fi
+    fi
+
+    if [ -f "${NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}" ]; then
+        if grep -q "connection_upgrade" "${NGINX_MAIN_CONF}" 2>/dev/null; then
+            ui_info "检测到主配置文件已包含 connection_upgrade 映射，跳过重复写入以避免冲突。"
+            return 0
+        fi
+    fi
+
     ui_info "正在注入全局 WebSocket Map 映射规则 (000-websocket-map.conf)..."
     cp "$tpl_file" "$target_file"
     ui_success "WebSocket 映射规则已就绪: $target_file"
@@ -336,6 +406,7 @@ nginx_setup_websocket_map() {
 # 12. Full Bootstrap for Nginx Environment
 nginx_bootstrap() {
     env_ensure_base_deps || true
+    nginx_detect_paths
     if ! nginx_is_installed; then
         ui_info "未检测到 Nginx，正在自动安装..."
         nginx_install || true
@@ -365,3 +436,7 @@ nginx_status_summary() {
 
     echo "Nginx 状态: ${installed} (${version}) | 进程: ${running}"
 }
+
+# Auto-detect on source
+nginx_detect_paths
+

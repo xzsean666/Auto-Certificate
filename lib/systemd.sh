@@ -41,7 +41,9 @@ systemd_setup_timer() {
     local webroot="${ACME_WEBROOT_DIR:-/var/www/certbot}"
     local certbot_bin
     certbot_bin="$(command -v "${CERTBOT_BIN:-certbot}" 2>/dev/null || echo "/usr/bin/certbot")"
-    local post_hook="nginx -t && systemctl reload nginx"
+    local post_hook="nginx -t && (systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || true)"
+    local escaped_post_hook
+    escaped_post_hook="$(printf '%s\n' "$post_hook" | sed -e 's/[&\\|]/\\&/g')"
 
     if [ ! -f "$s_tpl" ] || [ ! -f "$t_tpl" ]; then
         ui_error "未找到 Systemd 服务或定时器模板文件。"
@@ -54,7 +56,7 @@ systemd_setup_timer() {
     sed \
         -e "s|{{CERTBOT_BIN}}|${certbot_bin}|g" \
         -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
-        -e "s|{{POST_HOOK_CMD}}|${post_hook}|g" \
+        -e "s|{{POST_HOOK_CMD}}|${escaped_post_hook}|g" \
         "$s_tpl" > "${system_dir}/${s_name}"
 
     ui_info "正在渲染并注入 Systemd 自动续期定时器 (${t_name}) [含 3600s 随机抖动]..."

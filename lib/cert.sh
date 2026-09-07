@@ -41,17 +41,17 @@ cert_install() {
 
     case "$PKG_MANAGER" in
         apt)
-            pkg_install certbot python3-certbot-nginx || pkg_install certbot
+            pkg_install certbot
             ;;
         dnf|yum)
             pkg_install epel-release 2>/dev/null || true
-            pkg_install certbot python3-certbot-nginx || pkg_install certbot
+            pkg_install certbot
             ;;
         apk)
-            pkg_install certbot certbot-nginx || pkg_install certbot
+            pkg_install certbot
             ;;
         pacman)
-            pkg_install certbot certbot-nginx || pkg_install certbot
+            pkg_install certbot
             ;;
         *)
             ui_error "未知的包管理器，无法自动安装 Certbot。"

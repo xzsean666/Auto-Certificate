@@ -505,6 +505,10 @@ main() {
     if [ "$#" -ge 2 ] && [ "$1" = "--ssh" ]; then
         local ssh_target="$2"
         shift 2
+        if [ "$#" -ge 2 ] && { [ "$1" = "--ssh-key" ] || [ "$1" = "-i" ]; }; then
+            export SSH_KEY="$2"
+            shift 2
+        fi
         remote_execute "$ssh_target" "$@"
         exit $?
     fi

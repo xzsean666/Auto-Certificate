@@ -79,17 +79,18 @@ remote_build_remote_command() {
     shift
     local subcommands=("$@")
 
+    local args_str=""
+    if [ "${#subcommands[@]}" -gt 0 ]; then
+        for arg in "${subcommands[@]}"; do
+            args_str+=" $(printf '%q' "$arg")"
+        done
+    fi
+
     # Command string with trap cleanup
     local cmd="mkdir -p '${remote_dir}' && tar -xzf - -C '${remote_dir}' && "
     cmd+="trap 'rm -rf \"${remote_dir}\"' EXIT INT TERM; "
     cmd+="cd '${remote_dir}' && chmod +x ngx-cert-manager main.sh 2>/dev/null || true; "
-    cmd+="if [ -x ./ngx-cert-manager ]; then ./ngx-cert-manager; else ./main.sh; fi"
-
-    if [ "${#subcommands[@]}" -gt 0 ]; then
-        for arg in "${subcommands[@]}"; do
-            cmd+=" '$arg'"
-        done
-    fi
+    cmd+="if [ -x ./ngx-cert-manager ]; then ./ngx-cert-manager${args_str}; else ./main.sh${args_str}; fi"
 
     echo "$cmd"
 }
@@ -131,6 +132,11 @@ remote_execute() {
     eval "$(remote_parse_ssh_target "$ssh_target")"
     if [ -n "$PORT" ]; then
         ssh_opts+=(-p "$PORT")
+    fi
+    if [ -n "${SSH_KEY:-}" ] && [ -f "$SSH_KEY" ]; then
+        ssh_opts+=(-i "$SSH_KEY")
+    elif [ -n "${SSH_IDENTITY_FILE:-}" ] && [ -f "$SSH_IDENTITY_FILE" ]; then
+        ssh_opts+=(-i "$SSH_IDENTITY_FILE")
     fi
 
     local remote_cmd

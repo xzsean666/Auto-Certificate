@@ -1,0 +1,4 @@
+./ngx-cert-manager --ssh root@xx --ssh-key ~/ssh/sean site add \
+    --domain xxx \
+    --upstream 127.0.0.1:10101 \
+    --email xx
