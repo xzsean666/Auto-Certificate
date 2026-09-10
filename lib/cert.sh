@@ -236,11 +236,20 @@ cert_get_status_badge() {
 cert_exists_and_valid() {
     local domain="$1"
     local live_base="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}"
-    local cert_file="${live_base}/$domain/fullchain.pem"
     local clean_domain="${domain#\*.}"
+    local parent_domain="${domain#*.}"
 
+    local cert_file="${live_base}/$domain/fullchain.pem"
     if [ ! -f "$cert_file" ] && [ -f "${live_base}/$clean_domain/fullchain.pem" ]; then
         cert_file="${live_base}/$clean_domain/fullchain.pem"
+    fi
+
+    # Check parent wildcard cert
+    if [ ! -f "$cert_file" ] && [ "$parent_domain" != "$domain" ] && [ -f "${live_base}/$parent_domain/fullchain.pem" ]; then
+        local p_cert="${live_base}/$parent_domain/fullchain.pem"
+        if openssl x509 -text -noout -in "$p_cert" 2>/dev/null | grep -qi "\*\.${parent_domain}"; then
+            cert_file="$p_cert"
+        fi
     fi
 
     if [ -f "$cert_file" ]; then

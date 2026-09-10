@@ -191,6 +191,17 @@ ngx-cert-manager --ssh root@203.0.113.10 site add --domain api.remote.com --upst
 
 ---
 
+## 📚 场景实战与进阶文档 (Documentation)
+
+针对各种不同的网络拓扑与业务场景，我们提供了详尽的专项目录指南：
+
+* 📘 **[全场景实战与配置全集指南](docs/FULL_SCENARIOS_GUIDE.md)**：包含全拓扑选型决策树、公网 VPS 直连、Cloudflare 小黄云 Proxied 边缘 CDN、纯 DNS 直连等全场景方案与完整命令。
+* 📙 **[内网穿透与泛域名反代实战指南](docs/INTRANET_FRP_WILDCARD_GUIDE.md)**：针对无公网 IP、FRP 单端口（如 `26703`）复用、Cloudflare DNS-01 泛域名证书（`*.domain.com`）与持续新增内网子域名的完整实战手册。
+* 📕 **[CLI 完整命令字典与参数参考](docs/CLI_REFERENCE.md)**：所有子命令、可选参数、环境变量与技术原理解析。
+* 📋 **[即拷即用实战命令清单](cmd_examples)**：整理好的高频运维场景一键单行命令集。
+
+---
+
 ## 🖥️ 交互式 TUI 大盘预览
 
 ```text

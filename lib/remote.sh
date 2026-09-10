@@ -136,6 +136,17 @@ remote_execute() {
     local raw_key="${SSH_KEY:-${SSH_IDENTITY_FILE:-}}"
     if [ -n "$raw_key" ]; then
         local resolved_key="${raw_key/#\~/$HOME}"
+        if [ ! -f "$resolved_key" ]; then
+            local real_home
+            real_home="$(getent passwd "$(whoami)" 2>/dev/null | cut -d: -f6)"
+            [ -z "$real_home" ] && real_home="/home/$(whoami)"
+            if [[ "$raw_key" =~ ^~/ ]]; then
+                [ -n "$real_home" ] && [ -f "${real_home}/${raw_key#~/}" ] && resolved_key="${real_home}/${raw_key#~/}"
+            elif [ -n "$real_home" ] && [ "$real_home" != "$HOME" ] && [[ "$resolved_key" == "$HOME"* ]]; then
+                local alt_key="${real_home}${resolved_key#$HOME}"
+                [ -f "$alt_key" ] && resolved_key="$alt_key"
+            fi
+        fi
         if [ -f "$resolved_key" ]; then
             ssh_opts+=(-i "$resolved_key")
         else

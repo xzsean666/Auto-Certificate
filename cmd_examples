@@ -1,4 +1,151 @@
-./ngx-cert-manager --ssh root@xx --ssh-key ~/ssh/sean site add \
-    --domain xxx \
+# ==============================================================================
+# ngx-cert-manager 常用运维命令与实战场景示例清单
+# ==============================================================================
+#
+# 架构原理 (FRP + Nginx SNI 单公网端口多域名复用):
+# ------------------------------------------------------------------------------
+# 1. 公网 FRP 端口 (26703) -> 转发到内网机器 (192.168.31.110) 的 443 端口 (type = "tcp")
+# 2. 内网 Nginx 监听 443 端口，配置泛域名证书 (*.sean-server.002788.xyz)
+# 3. 客户端无论通过哪一个子域名访问 https://<子域名>.sean-server.002788.xyz:26703/
+#    - FRP 将原生 TLS 加密流量透传给内网 Nginx；
+#    - Nginx 根据 TLS SNI (Server Name Indication) 域名自动匹配对应反代配置；
+#    - 实现【公网只开一个端口 26703，即可安全代理内网任意多个不同服务/不同IP】！
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# 场景一：远程免安装运维 (推荐！在本地电脑执行，远程运维 192.168.31.110)
+# ------------------------------------------------------------------------------
+
+# 示例 1.1：签发 / 续期泛域名证书 (*.sean-server.002788.xyz)
+# (注: 当 config.env 中已配置 CF_DNS_API_TOKEN 时，直接追加 --dns-cf 即可)
+./ngx-cert-manager --ssh root@192.168.31.110 --ssh-key ~/ssh/sean cert issue \
+    --domain "*.sean-server.002788.xyz" \
+    --email admin@002788.xyz \
+    --dns-cf
+
+# 示例 1.2：将 10202 端口以二级域名代理出来 (已实测验证通过！)
+# 访问入口: https://10202.sean-server.002788.xyz:26703
+./ngx-cert-manager --ssh root@192.168.31.110 --ssh-key ~/ssh/sean site add \
+    --domain 10202.sean-server.002788.xyz \
+    --upstream 127.0.0.1:10202 \
+    --dns-cf
+
+# 示例 1.3：将 10101 端口服务代理出来
+# 访问入口: https://10101.sean-server.002788.xyz:26703
+./ngx-cert-manager --ssh root@192.168.31.110 --ssh-key ~/ssh/sean site add \
+    --domain 10101.sean-server.002788.xyz \
     --upstream 127.0.0.1:10101 \
-    --email xx
+    --dns-cf
+
+# 示例 1.4：将局域网内其他机器的服务代理出来 (例如内网另一台服务器 192.168.31.200:8080)
+# 访问入口: https://nas.sean-server.002788.xyz:26703
+./ngx-cert-manager --ssh root@192.168.31.110 --ssh-key ~/ssh/sean site add \
+    --domain nas.sean-server.002788.xyz \
+    --upstream 192.168.31.200:8080 \
+    --dns-cf
+
+# 示例 1.5：查看远端服务器上的所有反代站点大盘
+./ngx-cert-manager --ssh root@192.168.31.110 --ssh-key ~/ssh/sean site list
+
+# 示例 1.6：查看远端服务器上的 SSL 证书剩余有效天数
+./ngx-cert-manager --ssh root@192.168.31.110 --ssh-key ~/ssh/sean cert list
+
+# 示例 1.7：查看某个站点的 Nginx 配置文件内容
+./ngx-cert-manager --ssh root@192.168.31.110 --ssh-key ~/ssh/sean site get \
+    --domain 10202.sean-server.002788.xyz
+
+# 示例 1.8：删除某个站点的反代配置 (保留泛域名证书给其它子域名使用)
+./ngx-cert-manager --ssh root@192.168.31.110 --ssh-key ~/ssh/sean site delete \
+    --domain 10202.sean-server.002788.xyz
+
+# 示例 1.9：激活远端服务器 Systemd 证书自动续期定时器 (默认已激活)
+./ngx-cert-manager --ssh root@192.168.31.110 --ssh-key ~/ssh/sean timer setup
+
+
+# ------------------------------------------------------------------------------
+# 场景二：独立公网主机 (公网 VPS / 云服务器直连)
+# ------------------------------------------------------------------------------
+
+# 示例 2.1：标准 80/443 端口开放环境 (Webroot 零中断模式，最推荐)
+# (适用: 海外 VPS 如 AWS/搬瓦工/甲骨文 或 国内已备案云主机)
+sudo ./ngx-cert-manager site add \
+    --domain api.example.com \
+    --upstream 127.0.0.1:3000 \
+    --email admin@example.com
+
+# 示例 2.2：通过 SSH 远程给公网 VPS 一键部署 (本地无需登录远程，远端自动装依赖)
+./ngx-cert-manager --ssh root@203.0.113.10 --ssh-key ~/.ssh/id_rsa site add \
+    --domain api.example.com \
+    --upstream 127.0.0.1:3000 \
+    --email admin@example.com
+
+# 示例 2.3：国内云服务器未备案 / 80 端口被运营商拦截封禁
+# (痛点: 80 端口不通导致 HTTP-01 验证失败；解决: 用 --dns-cf 走 DNS-01 验证完美绕过)
+sudo ./ngx-cert-manager site add \
+    --domain server.example.com \
+    --upstream 127.0.0.1:8080 \
+    --dns-cf
+
+
+# ------------------------------------------------------------------------------
+# 场景三：使用 Cloudflare 开启小黄云 (Proxied 边缘 CDN 代理)
+# ------------------------------------------------------------------------------
+
+# 示例 3.1：Flexible 灵活模式 (源站纯 HTTP 80，免证书零开销)
+# (原理: 访客到 CF 走 HTTPS，CF 到源站走纯 HTTP 80，源站无需申请证书)
+sudo ./ngx-cert-manager site add \
+    --domain cf.example.com \
+    --upstream 127.0.0.1:3000 \
+    --no-ssl
+
+# 示例 3.2：Full / Full (Strict) 严格模式 (端到端全程加密)
+# (原理: 开启小黄云后无法直连源站 IP，必须使用 --dns-cf 申请证书)
+sudo ./ngx-cert-manager site add \
+    --domain secure.example.com \
+    --upstream 127.0.0.1:3000 \
+    --dns-cf
+
+
+# ------------------------------------------------------------------------------
+# 场景四：不使用小黄云 (DNS Only 纯解析直连源站)
+# ------------------------------------------------------------------------------
+
+# 示例 4.1：标准公网直连 (流量直通源站，极低网络延迟)
+sudo ./ngx-cert-manager site add \
+    --domain direct.example.com \
+    --upstream 127.0.0.1:3000 \
+    --email admin@example.com
+
+# 示例 4.2：带 200MB 大文件上传限制 + WebSocket 升级
+sudo ./ngx-cert-manager site add \
+    --domain pan.example.com \
+    --upstream 127.0.0.1:5244 \
+    --body-size 200m \
+    --email admin@example.com
+
+
+# ------------------------------------------------------------------------------
+# 场景五：Unix Domain Socket (UDS) 本地高性能反代 (FastAPI/Gunicorn/PHP)
+# ------------------------------------------------------------------------------
+
+# 示例 5.1：内存套接字通信 (提升 20%~30% 吞吐，消除端口占用冲突)
+sudo ./ngx-cert-manager site add \
+    --domain py.example.com \
+    --upstream unix:/run/uvicorn.sock: \
+    --email admin@example.com
+
+
+# ------------------------------------------------------------------------------
+# 场景六：FRP 客户端配置参考 (/ssd0/apps/frpc-88frp/frpc.toml)
+# ------------------------------------------------------------------------------
+# 必须配置为 type = "tcp"，保证 TLS 原生握手直达内网 Nginx：
+#
+# [[proxies]]
+# name = "zAeQHChOYy4J"
+# type = "tcp"
+# localIP = "127.0.0.1"
+# localPort = 443
+# remotePort = 26703
+# transport.useEncryption = true
+# transport.useCompression = true

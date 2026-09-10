@@ -270,11 +270,19 @@ proxy_add_site() {
 
     # Step 2: Acquire SSL Certificate
     local clean_domain="${domain#\*.}"
+    local parent_domain="${domain#*.}"
     local cert_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$domain/fullchain.pem"
     local key_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$domain/privkey.pem"
     if [ ! -f "$cert_path" ] && [ -f "${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$clean_domain/fullchain.pem" ]; then
         cert_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$clean_domain/fullchain.pem"
         key_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$clean_domain/privkey.pem"
+    elif [ ! -f "$cert_path" ] && [ "$parent_domain" != "$domain" ] && [ -f "${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$parent_domain/fullchain.pem" ]; then
+        local p_cert="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$parent_domain/fullchain.pem"
+        if openssl x509 -text -noout -in "$p_cert" 2>/dev/null | grep -qi "\*\.${parent_domain}"; then
+            cert_path="$p_cert"
+            key_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$parent_domain/privkey.pem"
+            ui_info "检测到上级泛域名 (*.${parent_domain}) 证书有效，自动复用。"
+        fi
     fi
 
     if ! cert_exists_and_valid "$domain"; then
@@ -395,8 +403,16 @@ proxy_list_sites() {
             fi
 
             # Check SSL cert file
-            local cert_file="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$domain/fullchain.pem"
-            if [ -f "$cert_file" ]; then
+            local cert_line
+            cert_line="$(grep -E '^[[:space:]]*ssl_certificate[[:space:]]+' "$f" | head -n 1 || true)"
+            local cert_file=""
+            if [[ "$cert_line" =~ ssl_certificate[[:space:]]+([^;]+)\; ]]; then
+                cert_file="${BASH_REMATCH[1]}"
+            else
+                cert_file="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$domain/fullchain.pem"
+            fi
+
+            if [ -n "$cert_file" ] && [ -f "$cert_file" ]; then
                 local days
                 days="$(cert_get_remaining_days "$cert_file")"
                 local level

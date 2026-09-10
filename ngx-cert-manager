@@ -560,12 +560,11 @@ main() {
                 shift
                 ;;
             --ssh-key|-i)
-                export SSH_KEY="${2/#\~/$HOME}"
+                export SSH_KEY="$2"
                 shift 2
                 ;;
             --ssh-key=*)
-                local val="${1#*=}"
-                export SSH_KEY="${val/#\~/$HOME}"
+                export SSH_KEY="${1#*=}"
                 shift
                 ;;
             *)
