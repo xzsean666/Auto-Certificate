@@ -5,6 +5,8 @@
 *.backup
 *.bak
 
+config.env
+
 # Temporary files
 *.tmp
 *.swp

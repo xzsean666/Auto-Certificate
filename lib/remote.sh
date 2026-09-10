@@ -133,10 +133,14 @@ remote_execute() {
     if [ -n "$PORT" ]; then
         ssh_opts+=(-p "$PORT")
     fi
-    if [ -n "${SSH_KEY:-}" ] && [ -f "$SSH_KEY" ]; then
-        ssh_opts+=(-i "$SSH_KEY")
-    elif [ -n "${SSH_IDENTITY_FILE:-}" ] && [ -f "$SSH_IDENTITY_FILE" ]; then
-        ssh_opts+=(-i "$SSH_IDENTITY_FILE")
+    local raw_key="${SSH_KEY:-${SSH_IDENTITY_FILE:-}}"
+    if [ -n "$raw_key" ]; then
+        local resolved_key="${raw_key/#\~/$HOME}"
+        if [ -f "$resolved_key" ]; then
+            ssh_opts+=(-i "$resolved_key")
+        else
+            ui_warn "指定的 SSH 私钥文件未找到: $raw_key ($resolved_key)"
+        fi
     fi
 
     local remote_cmd

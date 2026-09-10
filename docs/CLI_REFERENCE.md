@@ -76,6 +76,35 @@ sudo ngx-cert site add --domain py.example.com --upstream unix:/run/gunicorn.soc
 
 ---
 
+### 场景 6：内网服务器 / 无公网 IP / FRP 穿透 (Cloudflare DNS-01 模式)
+> **说明**：服务器处于内网无公网 IP，或通过 FRP 映射了自定义非标准公网端口。通过 Cloudflare DNS-01 API 验证，无需开放 80 端口，无需公网 IP，甚至支持申请泛域名证书 (`*.example.com`)。
+
+```bash
+# 方式 A：已在 config.env 中配置 CF_DNS_API_TOKEN (开箱即用)
+sudo ngx-cert site add --domain api.example.com --upstream 127.0.0.1:10101 --email admin@example.com --dns-cf
+
+# 方式 B：临时传入 Cloudflare API Token
+sudo ngx-cert site add --domain api.example.com --upstream 127.0.0.1:10101 --email admin@example.com --dns-cf --cf-token "你的_Cloudflare_Token"
+
+# 方式 C：只签发泛域名证书 (不配置反代)
+sudo ngx-cert cert issue --domain "*.example.com" --email admin@example.com --dns-cf
+```
+
+---
+
+### 场景 7：本地通过 SSH 私钥远程为内网/远端机器部署 (一键闭环)
+> **说明**：通过 `--ssh` 和 `--ssh-key` 直接连接远端机器，本地 `config.env` 中的 Cloudflare Token 会自动安全打包并流式传输，在远端无痕执行，配置完成后自动销毁临时环境。
+
+```bash
+./ngx-cert-manager --ssh root@192.168.1.100 --ssh-key ~/ssh/sean site add \
+    --domain app.example.com \
+    --upstream 127.0.0.1:10101 \
+    --email admin@example.com \
+    --dns-cf
+```
+
+---
+
 ## 二、什么是 Unix Domain Socket 反代 (示例 04 原理解析)
 
 在 Linux 环境下，当你的后端程序（如 Python FastAPI / Flask / Django、Node.js、PHP-FPM、Go）与 Nginx 运行在**同一台物理机/云服务器**上时，反向代理有两种通信方式：
@@ -131,7 +160,7 @@ sequenceDiagram
 
 | 命令 | 参数说明 | 作用描述 |
 | :--- | :--- | :--- |
-| `ngx-cert site add` | `--domain <域名>` *(必填)*<br>`--upstream <后端地址>` *(必填)*<br>`--email <邮箱>` *(申请证书时推荐)*<br>`--no-ssl` 或 `--http-only` *(开启纯 HTTP 反代)*<br>`--hsts` / `--no-hsts` *(开启/关闭 HSTS)*<br>`--ws` / `--no-ws` *(开启/关闭 WebSocket)*<br>`--body-size <大小>` *(上传限制，默认 50m)*<br>`--staging` *(沙箱演练测试证书)*<br>`--skip-dns-check` *(跳过 DNS 校验)* | 一键完成域名检验、证书申请、安全配置生成与平滑生效 |
+| `ngx-cert site add` | `--domain <域名>` *(必填)*<br>`--upstream <后端地址>` *(必填)*<br>`--email <邮箱>` *(申请证书时推荐)*<br>`--dns-cf` *(启用 Cloudflare DNS-01 验证)*<br>`--cf-token <token>` *(指定 Cloudflare API Token)*<br>`--no-ssl` 或 `--http-only` *(开启纯 HTTP 反代)*<br>`--hsts` / `--no-hsts` *(开启/关闭 HSTS)*<br>`--ws` / `--no-ws` *(开启/关闭 WebSocket)*<br>`--body-size <大小>` *(上传限制，默认 50m)*<br>`--staging` *(沙箱演练测试证书)*<br>`--skip-dns-check` *(跳过 DNS 校验)* | 一键完成域名检验、证书申请、安全配置生成与平滑生效 |
 | `ngx-cert site list` | 无 | 查看当前服务器上所有受管站点的大盘与状态 |
 | `ngx-cert site get` | `--domain <域名>` | 打印查看指定站点的实际 Nginx 配置文件内容 |
 | `ngx-cert site delete` | `--domain <域名>`<br>`--delete-cert` *(可选同时吊销证书)* | 安全归档并移除站点配置，平滑重载 Nginx |
@@ -142,7 +171,7 @@ sequenceDiagram
 
 | 命令 | 参数说明 | 作用描述 |
 | :--- | :--- | :--- |
-| `ngx-cert cert issue` | `--domain <域名>` *(必填)*<br>`--email <邮箱>` *(必填)*<br>`--webroot` *(默认 Webroot 零停机)*<br>`--standalone` *(独立端口模式)*<br>`--staging` *(沙箱环境)*<br>`--force` *(强制重新申请)* | 独立申请 Let's Encrypt 免费 SSL 证书 |
+| `ngx-cert cert issue` | `--domain <域名>` *(必填)*<br>`--email <邮箱>` *(必填)*<br>`--webroot` *(默认 Webroot 零停机)*<br>`--standalone` *(独立端口模式)*<br>`--dns-cf` *(Cloudflare DNS-01 API 验证模式)*<br>`--cf-token <token>` *(指定 Cloudflare API Token)*<br>`--staging` *(沙箱环境)*<br>`--force` *(强制重新申请)* | 独立申请 Let's Encrypt 免费 SSL 证书 (支持泛域名) |
 | `ngx-cert cert list` | 无 | 证书监控大盘，查看全部证书到期日及 🟢/🟡/🔴 三级预警 |
 | `ngx-cert cert renew` | `--force` *(强制续期)*<br>`--dry-run` *(模拟演练不消耗限额)* | 扫描所有证书并执行自动化续期 |
 | `ngx-cert cert revoke` | `--domain <域名>` | 吊销并清理对应域名的证书文件 |

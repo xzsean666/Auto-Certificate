@@ -216,10 +216,27 @@ proxy_add_site() {
     local staging="${8:-0}"
     local non_interactive="${9:-0}"
     local ssl_enabled="${10:-1}"
+    local dns_mode="${11:-auto}"
+    local cf_token="${12:-}"
 
     if [ -z "$domain" ] || [ -z "$upstream" ]; then
         ui_error "必须指定域名 (--domain) 与上游地址 (--upstream)。"
         return 1
+    fi
+
+    # Determine whether to use Cloudflare DNS-01 mode
+    local use_dns_cf=0
+    if [ "$dns_mode" = "dns_cf" ] || [ "$dns_mode" = "1" ] || [ "$dns_mode" = "cloudflare" ]; then
+        use_dns_cf=1
+    elif [ "$dns_mode" = "webroot" ] || [ "$dns_mode" = "0" ]; then
+        use_dns_cf=0
+    elif [ "$dns_mode" = "auto" ] || [ -z "$dns_mode" ]; then
+        # Auto-detect: if cf_token provided, CF_DNS_API_TOKEN set, or DEFAULT_CERT_MODE is dns_cf
+        if [ -n "${cf_token:-}" ] || [ -n "${CF_DNS_API_TOKEN:-}" ] || [ "${DEFAULT_CERT_MODE:-webroot}" = "dns_cf" ]; then
+            use_dns_cf=1
+        else
+            use_dns_cf=0
+        fi
     fi
 
     ui_section "开始配置反向代理站点: ${domain}"
@@ -246,32 +263,48 @@ proxy_add_site() {
 
     # Branch B: Standard HTTPS + SSL Certificate Mode
     # Step 1: DNS Pre-flight Inspection
-    if ! domain_verify_dns "$domain" "$skip_dns" "$non_interactive"; then
+    if ! domain_verify_dns "$domain" "$skip_dns" "$non_interactive" "$use_dns_cf"; then
         ui_error "DNS 预检失败，终止操作。"
         return 3
     fi
 
     # Step 2: Acquire SSL Certificate
+    local clean_domain="${domain#\*.}"
     local cert_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$domain/fullchain.pem"
     local key_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$domain/privkey.pem"
+    if [ ! -f "$cert_path" ] && [ -f "${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$clean_domain/fullchain.pem" ]; then
+        cert_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$clean_domain/fullchain.pem"
+        key_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$clean_domain/privkey.pem"
+    fi
 
     if ! cert_exists_and_valid "$domain"; then
         if [ -z "$email" ]; then
             if [ "$non_interactive" = "1" ]; then
-                email="admin@${domain}"
+                email="admin@${clean_domain}"
             else
-                email="$(ui_prompt "请输入 Let's Encrypt 登记联系邮箱" "admin@${domain}")"
+                email="$(ui_prompt "请输入 Let's Encrypt 登记联系邮箱" "admin@${clean_domain}")"
             fi
         fi
 
-        # Pre-provision temporary dedicated HTTP-01 challenge route for domain
-        local conf_dir="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
-        local site_conf="${conf_dir}/${domain}.conf"
-        local temp_conf_created=0
-        if [ ! -f "$site_conf" ]; then
-            ui_info "正在为 ${domain} 预置 HTTP-01 验证穿透通道..."
-            local webroot="${ACME_WEBROOT_DIR:-/var/www/certbot}"
-            cat <<EOF > "$site_conf"
+        if [ "$use_dns_cf" -eq 1 ]; then
+            ui_info "配置模式: Cloudflare DNS-01 验证模式 (无公网80端口依赖)..."
+            if ! cert_issue_dns_cloudflare "$domain" "$email" "$cf_token" "$staging"; then
+                ui_error "证书签发失败，终止配置反向代理。"
+                return 1
+            fi
+            if [ ! -f "$cert_path" ] && [ -f "${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$clean_domain/fullchain.pem" ]; then
+                cert_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$clean_domain/fullchain.pem"
+                key_path="${LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}/$clean_domain/privkey.pem"
+            fi
+        else
+            # Pre-provision temporary dedicated HTTP-01 challenge route for domain
+            local conf_dir="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+            local site_conf="${conf_dir}/${domain}.conf"
+            local temp_conf_created=0
+            if [ ! -f "$site_conf" ]; then
+                ui_info "正在为 ${domain} 预置 HTTP-01 验证穿透通道..."
+                local webroot="${ACME_WEBROOT_DIR:-/var/www/certbot}"
+                cat <<EOF > "$site_conf"
 server {
     listen 80;
     server_name ${domain};
@@ -287,21 +320,22 @@ server {
     }
 }
 EOF
-            if nginx_reload; then
-                temp_conf_created=1
-            else
-                rm -f "$site_conf"
-                nginx_reload || true
+                if nginx_reload; then
+                    temp_conf_created=1
+                else
+                    rm -f "$site_conf"
+                    nginx_reload || true
+                fi
             fi
-        fi
 
-        if ! cert_issue_webroot "$domain" "$email" "$staging"; then
-            if [ "$temp_conf_created" -eq 1 ]; then
-                rm -f "$site_conf"
-                nginx_reload || true
+            if ! cert_issue_webroot "$domain" "$email" "$staging"; then
+                if [ "$temp_conf_created" -eq 1 ]; then
+                    rm -f "$site_conf"
+                    nginx_reload || true
+                fi
+                ui_error "证书签发失败，终止配置反向代理。"
+                return 1
             fi
-            ui_error "证书签发失败，终止配置反向代理。"
-            return 1
         fi
     else
         ui_info "检测到 ${domain} 证书已存在且有效，直接复用。"

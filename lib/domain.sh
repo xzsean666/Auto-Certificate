@@ -179,6 +179,12 @@ domain_verify_dns() {
     local domain="$1"
     local skip_check="${2:-0}"
     local non_interactive="${3:-0}"
+    local is_dns_mode="${4:-0}"
+
+    if [ "$is_dns_mode" = "1" ] || [ "$is_dns_mode" = "true" ] || [ "$is_dns_mode" = "--dns-cf" ] || [ "$is_dns_mode" = "dns_cf" ]; then
+        ui_info "已启用 Cloudflare DNS-01 验证模式: 跳过公网 IP 匹配与 80 端口占用检查 (支持内网/无公网IP/FRP穿透/非80端口环境)。"
+        return 0
+    fi
 
     if [ "$skip_check" = "1" ] || [ "$skip_check" = "true" ] || [ "$skip_check" = "--skip-dns-check" ]; then
         ui_warn "已通过参数显式跳过 DNS 解析前置预检。"

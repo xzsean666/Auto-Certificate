@@ -60,4 +60,9 @@ assert_contains "$cmd_str" "mkdir -p '/tmp/.ngx-test'" "Command creates remote d
 assert_contains "$cmd_str" "trap 'rm -rf \"/tmp/.ngx-test\"' EXIT INT TERM" "Command registers self-cleaning trap"
 assert_contains "$cmd_str" "ngx-cert-manager" "Command launches ngx-cert-manager"
 
+# Test 4: Verify config.env in bundle contains Cloudflare configuration
+test_case "config.env inside unpacked bundle preserves Cloudflare settings"
+assert_contains "$(cat "$extract_dir/config.env")" "CF_DNS_API_TOKEN" "Preserves CF_DNS_API_TOKEN"
+assert_contains "$(cat "$extract_dir/config.env")" "DEFAULT_CERT_MODE" "Preserves DEFAULT_CERT_MODE"
+
 test_summary

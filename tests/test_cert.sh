@@ -122,7 +122,16 @@ issue_out="$(cert_issue_webroot "new.example.com" "admin@example.com" "1" "1")"
 assert_contains "$issue_out" "SSL_CERT_PATH=$LETSENCRYPT_LIVE_DIR/new.example.com/fullchain.pem" "Output returns cert path"
 assert_file_exists "$LETSENCRYPT_LIVE_DIR/new.example.com/fullchain.pem" "Fullchain cert created"
 
-# Test 6: cert_renew and cert_revoke
+# Test 6: cert_issue_dns_cloudflare
+test_case "cert_issue_dns_cloudflare creates credentials file and issues cert"
+export CF_CREDENTIALS_FILE="$SANDBOX/etc/letsencrypt/cloudflare.ini"
+dns_out="$(cert_issue_dns_cloudflare "dns.example.com" "admin@example.com" "test_cf_token_123" "1" "1")"
+assert_file_exists "$CF_CREDENTIALS_FILE" "Cloudflare credentials ini file created"
+assert_contains "$(cat "$CF_CREDENTIALS_FILE")" "dns_cloudflare_api_token = test_cf_token_123" "Token correctly written into credentials file"
+assert_contains "$dns_out" "SSL_CERT_PATH=$LETSENCRYPT_LIVE_DIR/dns.example.com/fullchain.pem" "Output returns cert path for DNS-01"
+assert_file_exists "$LETSENCRYPT_LIVE_DIR/dns.example.com/fullchain.pem" "Fullchain cert created for dns.example.com"
+
+# Test 7: cert_renew and cert_revoke
 test_case "cert_renew and cert_revoke work with certbot wrapper"
 if cert_renew; then
     assert_eq "0" "0" "cert_renew succeeded"

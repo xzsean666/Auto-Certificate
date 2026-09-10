@@ -43,6 +43,8 @@ assert_contains "$help_out" "使用方法:" "Help contains usage section"
 assert_contains "$help_out" "site add" "Help contains site add subcommand"
 assert_contains "$help_out" "cert issue" "Help contains cert issue subcommand"
 assert_contains "$help_out" "--ssh" "Help contains --ssh option"
+assert_contains "$help_out" "--ssh-key" "Help contains --ssh-key option"
+assert_contains "$help_out" "--dns-cf" "Help contains --dns-cf option"
 
 # Test 3: site list subcommand
 test_case "ngx-cert-manager site list runs successfully"

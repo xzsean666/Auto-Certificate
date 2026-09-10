@@ -57,6 +57,27 @@ chmod +x "$mock_bin_dir/nginx"
 export NGINX_BIN="$mock_bin_dir/nginx"
 export TEST_FAIL_NGINX_FLAG="$SANDBOX/fail_nginx_test"
 
+cat << 'EOF' > "$mock_bin_dir/certbot"
+#!/usr/bin/env bash
+if [ "$1" = "certonly" ]; then
+    domain=""
+    for i in "$@"; do
+        if [ "$prev" = "-d" ]; then
+            domain="$i"
+        fi
+        prev="$i"
+    done
+    target_dir="$LETSENCRYPT_LIVE_DIR/$domain"
+    mkdir -p "$target_dir"
+    touch "$target_dir/fullchain.pem"
+    touch "$target_dir/privkey.pem"
+    exit 0
+fi
+exit 0
+EOF
+chmod +x "$mock_bin_dir/certbot"
+export CERTBOT_BIN="$mock_bin_dir/certbot"
+
 # Test 1: Upstream normalization
 test_case "proxy_normalize_upstream prepends http:// when missing"
 assert_eq "$(proxy_normalize_upstream "127.0.0.1:8080")" "http://127.0.0.1:8080" "Plain host:port normalized"
@@ -147,5 +168,13 @@ assert_contains "$rendered_http" "proxy_pass http://127.0.0.1:3000;" "Contains H
 # Add site in HTTP mode
 proxy_add_site "cf-app.example.com" "127.0.0.1:3000" "" "0" "30m" "1" "1" "0" "1" "0"
 assert_file_exists "$NGINX_CONF_DIR/cf-app.example.com.conf" "HTTP-only site conf created"
+
+# Test 9: proxy_add_site with Cloudflare DNS-01 mode
+test_case "proxy_add_site with Cloudflare DNS-01 acquires cert and creates SSL proxy"
+proxy_add_site "cf-dns.example.com" "127.0.0.1:10101" "admin@example.com" "1" "50m" "1" "0" "1" "1" "1" "dns_cf" "token_xyz_456"
+assert_file_exists "$NGINX_CONF_DIR/cf-dns.example.com.conf" "SSL site conf created with DNS-01 mode"
+conf_cf="$(cat "$NGINX_CONF_DIR/cf-dns.example.com.conf")"
+assert_contains "$conf_cf" "proxy_pass http://127.0.0.1:10101;" "Contains upstream target"
+assert_contains "$conf_cf" "ssl_certificate" "Contains SSL directives"
 
 test_summary

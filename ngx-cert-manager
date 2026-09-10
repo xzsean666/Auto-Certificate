@@ -71,6 +71,7 @@ ngx-cert-manager - Nginx & Let's Encrypt 一体化运维管理套件 v${NGX_CERT
   -h, --help                显示本帮助信息并退出
   -v, --version             显示当前版本信息并退出
   --ssh <user@host[:port]>  通过无痕 SSH 远程代理执行运维操作
+  --ssh-key, -i <key_file>  指定 SSH 连接私钥文件 (例如: ~/ssh/sean)
 
 子命令 (Subcommands):
   site                      反向代理站点管理
@@ -83,6 +84,8 @@ ngx-cert-manager - Nginx & Let's Encrypt 一体化运维管理套件 v${NGX_CERT
       --body-size <size>    客户端请求体上限 (默认: 50m)
       --ws                  启用 WebSocket 协议升级支持 (默认: 开启)
       --no-ws               禁用 WebSocket 协议升级支持
+      --dns-cf              使用 Cloudflare DNS-01 验证模式 (无公网IP/内网/FRP专用)
+      --cf-token <token>    指定 Cloudflare API Token (优先于 config.env)
       --skip-dns-check      跳过 DNS 解析预检
       --staging             使用 Let's Encrypt Staging 沙箱测试环境
       --no-ssl, --http-only 仅配置 HTTP 80 端口反代 (适用于 Cloudflare Flexible SSL 代理或内网)
@@ -99,6 +102,8 @@ ngx-cert-manager - Nginx & Let's Encrypt 一体化运维管理套件 v${NGX_CERT
       --email <email>       联系邮箱 (必填)
       --webroot             使用 Webroot 零中断模式 (默认)
       --standalone          使用 Standalone 独立模式 (兜底)
+      --dns-cf              使用 Cloudflare DNS-01 API 验证模式 (内网/无公网IP/泛域名)
+      --cf-token <token>    指定 Cloudflare API Token
       --staging             使用 Staging 测试环境
       --force               强制重新签发 (即使未到期)
     cert list               查看所有受管证书大盘与剩余有效期
@@ -205,6 +210,8 @@ cmd_site() {
             local skip_dns=0
             local staging=0
             local ssl_enabled=1
+            local cert_mode="auto"
+            local cf_token=""
 
             while [ $# -gt 0 ]; do
                 case "$1" in
@@ -224,11 +231,15 @@ cmd_site() {
                     --staging) staging=1; shift ;;
                     --no-ssl|--http-only) ssl_enabled=0; shift ;;
                     --ssl) ssl_enabled=1; shift ;;
+                    --dns-cf|--dns-cloudflare) cert_mode="dns_cf"; shift ;;
+                    --cf-token) cf_token="$2"; cert_mode="dns_cf"; shift 2 ;;
+                    --cf-token=*) cf_token="${1#*=}"; cert_mode="dns_cf"; shift ;;
+                    --webroot) cert_mode="webroot"; shift ;;
                     *) shift ;;
                 esac
             done
 
-            proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled"
+            proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled" "$cert_mode" "$cf_token"
             ;;
         *)
             ui_error "未知的 site 操作: $action"
@@ -273,9 +284,10 @@ cmd_cert() {
         issue)
             local domain=""
             local email=""
-            local mode="webroot"
+            local mode="auto"
             local staging=0
             local force=0
+            local cf_token=""
 
             while [ $# -gt 0 ]; do
                 case "$1" in
@@ -285,6 +297,9 @@ cmd_cert() {
                     --email=*) email="${1#*=}"; shift ;;
                     --webroot) mode="webroot"; shift ;;
                     --standalone) mode="standalone"; shift ;;
+                    --dns-cf|--dns-cloudflare) mode="dns_cf"; shift ;;
+                    --cf-token) cf_token="$2"; mode="dns_cf"; shift 2 ;;
+                    --cf-token=*) cf_token="${1#*=}"; mode="dns_cf"; shift ;;
                     --staging) staging=1; shift ;;
                     --force) force=1; shift ;;
                     *) shift ;;
@@ -293,8 +308,17 @@ cmd_cert() {
 
             if [ "$mode" = "standalone" ]; then
                 cert_issue_standalone "$domain" "$email" "$staging"
-            else
+            elif [ "$mode" = "dns_cf" ]; then
+                cert_issue_dns_cloudflare "$domain" "$email" "$cf_token" "$staging" "$force"
+            elif [ "$mode" = "webroot" ]; then
                 cert_issue_webroot "$domain" "$email" "$staging" "$force"
+            else
+                # Auto mode: if cf_token provided, CF_DNS_API_TOKEN set, or DEFAULT_CERT_MODE is dns_cf
+                if [ -n "$cf_token" ] || [ -n "${CF_DNS_API_TOKEN:-}" ] || [ "${DEFAULT_CERT_MODE:-webroot}" = "dns_cf" ]; then
+                    cert_issue_dns_cloudflare "$domain" "$email" "$cf_token" "$staging" "$force"
+                else
+                    cert_issue_webroot "$domain" "$email" "$staging" "$force"
+                fi
             fi
             ;;
         *)
@@ -391,8 +415,28 @@ tui_wizard_add_site() {
     local email=""
     local enable_hsts=0
     local staging=0
+    local cert_mode="webroot"
+    local cf_token=""
     if [ "$enable_ssl" -eq 1 ]; then
-        email="$(ui_prompt "4. 请输入 Let's Encrypt 联系邮箱" "admin@${domain}")"
+        email="$(ui_prompt "4. 请输入 Let's Encrypt 联系邮箱" "admin@${domain#\*.}")"
+
+        echo ""
+        local mode_choice
+        mode_choice="$(ui_select "请选择 SSL 证书签发验证模式:" \
+            "Webroot 模式 (HTTP-01 零停机验证，需公网 80 端口与 IP 解析对齐)" \
+            "Cloudflare DNS-01 模式 (API 验证，适用于内网/无公网IP/FRP穿透/泛域名)")"
+
+        if [ "$mode_choice" = "2" ]; then
+            cert_mode="dns_cf"
+            if [ -z "${CF_DNS_API_TOKEN:-}" ]; then
+                cf_token="$(ui_prompt "请输入 Cloudflare API Token")"
+            else
+                ui_info "已检测到 config.env 中的 Cloudflare API Token。"
+            fi
+        else
+            cert_mode="webroot"
+        fi
+
         if ui_confirm "5. 是否开启 HSTS 强制安全防护?" "Y"; then
             enable_hsts=1
         fi
@@ -414,6 +458,7 @@ tui_wizard_add_site() {
     echo "  - 域名: $domain"
     echo "  - 上游: $(proxy_normalize_upstream "$upstream")"
     echo "  - SSL 模式: $([ "$enable_ssl" -eq 1 ] && echo "开启 HTTPS (Let's Encrypt)" || echo "纯 HTTP 80 端口反代")"
+    [ "$enable_ssl" -eq 1 ] && echo "  - 签发方式: $([ "$cert_mode" = "dns_cf" ] && echo "Cloudflare DNS-01 API" || echo "HTTP-01 Webroot")"
     [ "$enable_ssl" -eq 1 ] && echo "  - 邮箱: $email"
     [ "$enable_ssl" -eq 1 ] && echo "  - HSTS: $([ "$enable_hsts" -eq 1 ] && echo "开启" || echo "关闭")"
     echo "  - WebSocket: $([ "$enable_ws" -eq 1 ] && echo "开启" || echo "关闭")"
@@ -422,7 +467,7 @@ tui_wizard_add_site() {
     echo ""
 
     if ui_confirm "确认立即开始自动化部署?" "Y"; then
-        proxy_add_site "$domain" "$upstream" "$email" "$enable_hsts" "$body_size" "$enable_ws" "0" "$staging" "0" "$enable_ssl"
+        proxy_add_site "$domain" "$upstream" "$email" "$enable_hsts" "$body_size" "$enable_ws" "0" "$staging" "0" "$enable_ssl" "$cert_mode" "$cf_token"
     else
         ui_warn "已取消部署。"
     fi
@@ -501,17 +546,42 @@ tui_main_loop() {
 
 # Main Entrypoint Dispatcher
 main() {
-    # Check if --ssh parameter is passed
-    if [ "$#" -ge 2 ] && [ "$1" = "--ssh" ]; then
-        local ssh_target="$2"
-        shift 2
-        if [ "$#" -ge 2 ] && { [ "$1" = "--ssh-key" ] || [ "$1" = "-i" ]; }; then
-            export SSH_KEY="$2"
-            shift 2
-        fi
-        remote_execute "$ssh_target" "$@"
+    # Parse global SSH flags (supports --ssh and --ssh-key/-i in any order)
+    local ssh_target=""
+    local sub_args=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --ssh)
+                ssh_target="$2"
+                shift 2
+                ;;
+            --ssh=*)
+                ssh_target="${1#*=}"
+                shift
+                ;;
+            --ssh-key|-i)
+                export SSH_KEY="${2/#\~/$HOME}"
+                shift 2
+                ;;
+            --ssh-key=*)
+                local val="${1#*=}"
+                export SSH_KEY="${val/#\~/$HOME}"
+                shift
+                ;;
+            *)
+                sub_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    if [ -n "$ssh_target" ]; then
+        remote_execute "$ssh_target" "${sub_args[@]}"
         exit $?
     fi
+
+    # Restore sub_args for local command dispatching
+    set -- "${sub_args[@]}"
 
     # Global flags
     if [ "$#" -gt 0 ]; then
