@@ -89,6 +89,7 @@ ngx-cert-manager - Nginx & Let's Encrypt 一体化运维管理套件 v${NGX_CERT
       --skip-dns-check      跳过 DNS 解析预检
       --staging             使用 Let's Encrypt Staging 沙箱测试环境
       --no-ssl, --http-only 仅配置 HTTP 80 端口反代 (适用于 Cloudflare Flexible SSL 代理或内网)
+      --https-port <port>   内部 HTTPS 监听端口 (默认: auto 自动识别分流架构或标准 443)
     site list               列出所有受管反向代理站点
     site get                查看指定站点的 Nginx 配置文件
       --domain <domain>     目标域名
@@ -212,6 +213,7 @@ cmd_site() {
             local ssl_enabled=1
             local cert_mode="auto"
             local cf_token=""
+            local https_port=""
 
             while [ $# -gt 0 ]; do
                 case "$1" in
@@ -235,11 +237,13 @@ cmd_site() {
                     --cf-token) cf_token="$2"; cert_mode="dns_cf"; shift 2 ;;
                     --cf-token=*) cf_token="${1#*=}"; cert_mode="dns_cf"; shift ;;
                     --webroot) cert_mode="webroot"; shift ;;
+                    --https-port|--port) https_port="$2"; shift 2 ;;
+                    --https-port=*|--port=*) https_port="${1#*=}"; shift ;;
                     *) shift ;;
                 esac
             done
 
-            proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled" "$cert_mode" "$cf_token"
+            proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled" "$cert_mode" "$cf_token" "$https_port"
             ;;
         *)
             ui_error "未知的 site 操作: $action"

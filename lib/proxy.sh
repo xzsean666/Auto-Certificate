@@ -44,6 +44,10 @@ proxy_render_config() {
     local hsts="${5:-$DEFAULT_ENABLE_HSTS}"
     local body_size="${6:-$DEFAULT_CLIENT_MAX_BODY_SIZE}"
     local ws="${7:-$DEFAULT_ENABLE_WEBSOCKET}"
+    local custom_port="${8:-}"
+
+    local https_port
+    https_port="$(nginx_detect_https_port "$custom_port")"
 
     local tpl_dir="${NGX_TEMPLATES_DIR:-$_SCRIPT_DIR/../templates}"
     local tpl_file="${tpl_dir}/proxy-ssl.conf.tpl"
@@ -66,16 +70,16 @@ proxy_render_config() {
     fi
 
     # HTTP/2 syntax adaptivity
-    local ssl_listen_443="listen 443 ssl;"
+    local ssl_listen_443="listen ${https_port} ssl;"
     local http2_directive=""
     if nginx_supports_http2_directive; then
-        ssl_listen_443="listen 443 ssl;"
-        [ "${HAS_IPV6:-0}" -eq 1 ] && ipv6_443="listen [::]:443 ssl;"
+        ssl_listen_443="listen ${https_port} ssl;"
+        [ "${HAS_IPV6:-0}" -eq 1 ] && ipv6_443="listen [::]:${https_port} ssl;"
         http2_directive="http2 on;"
     else
         # Legacy HTTP/2 syntax
-        ssl_listen_443="listen 443 ssl http2;"
-        [ "${HAS_IPV6:-0}" -eq 1 ] && ipv6_443="listen [::]:443 ssl http2;"
+        ssl_listen_443="listen ${https_port} ssl http2;"
+        [ "${HAS_IPV6:-0}" -eq 1 ] && ipv6_443="listen [::]:${https_port} ssl http2;"
         http2_directive=""
     fi
 
@@ -218,6 +222,7 @@ proxy_add_site() {
     local ssl_enabled="${10:-1}"
     local dns_mode="${11:-auto}"
     local cf_token="${12:-}"
+    local custom_https_port="${13:-}"
 
     if [ -z "$domain" ] || [ -z "$upstream" ]; then
         ui_error "必须指定域名 (--domain) 与上游地址 (--upstream)。"
@@ -350,8 +355,14 @@ EOF
     fi
 
     # Step 3: Render and apply configuration
+    local effective_https_port
+    effective_https_port="$(nginx_detect_https_port "$custom_https_port")"
+    if [ "$effective_https_port" != "443" ]; then
+        ui_info "HTTPS 监听端口: ${effective_https_port} (已适配 Nginx 443 智能分流架构，公网访问仍为标准 443)"
+    fi
+
     local rendered
-    rendered="$(proxy_render_config "$domain" "$upstream" "$cert_path" "$key_path" "$hsts" "$body_size" "$ws")"
+    rendered="$(proxy_render_config "$domain" "$upstream" "$cert_path" "$key_path" "$hsts" "$body_size" "$ws" "$effective_https_port")"
 
     if proxy_apply_site_config "$domain" "$rendered"; then
         ui_section "🎉 站点 ${domain} 配置完成"

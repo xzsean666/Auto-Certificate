@@ -177,4 +177,14 @@ conf_cf="$(cat "$NGINX_CONF_DIR/cf-dns.example.com.conf")"
 assert_contains "$conf_cf" "proxy_pass http://127.0.0.1:10101;" "Contains upstream target"
 assert_contains "$conf_cf" "ssl_certificate" "Contains SSL directives"
 
+# Test 10: proxy_render_config with custom https_port
+test_case "proxy_render_config and proxy_add_site supports custom and auto-detected https_port"
+rendered_custom="$(proxy_render_config "custom-port.example.com" "127.0.0.1:5000" "/etc/ssl/cert.pem" "/etc/ssl/key.pem" "1" "50m" "1" "8443")"
+assert_contains "$rendered_custom" "listen 8443 ssl;" "Contains custom listen 8443 ssl;"
+
+proxy_add_site "custom-port.example.com" "127.0.0.1:5000" "admin@example.com" "1" "50m" "1" "0" "1" "1" "1" "dns_cf" "token_123" "8443"
+assert_file_exists "$NGINX_CONF_DIR/custom-port.example.com.conf" "Custom port site conf created"
+conf_custom="$(cat "$NGINX_CONF_DIR/custom-port.example.com.conf")"
+assert_contains "$conf_custom" "listen 8443 ssl;" "Site config contains listen 8443 ssl;"
+
 test_summary

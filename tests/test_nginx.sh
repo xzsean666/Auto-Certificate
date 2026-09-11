@@ -149,4 +149,46 @@ reload_ret=0
 nginx_reload || reload_ret=$?
 assert_status_code "$reload_ret" 1 "nginx_reload strictly blocked and returned 1 on syntax failure"
 
+# Test 9: nginx_detect_https_port with explicit port
+test_case "nginx_detect_https_port respects explicit custom port"
+assert_eq "$(nginx_detect_https_port "8443")" "8443" "Explicit 8443 respected"
+assert_eq "$(HTTPS_PORT=9443 nginx_detect_https_port)" "9443" "HTTPS_PORT env respected"
+
+# Test 10: nginx_detect_https_port defaults to 443 when no stream multiplexing
+test_case "nginx_detect_https_port defaults to 443 in standard configuration"
+cat << 'EOF' > "$NGINX_MAIN_CONF"
+events { worker_connections 1024; }
+http {
+    include mime.types;
+}
+EOF
+assert_eq "$(nginx_detect_https_port)" "443" "Defaults to standard 443"
+
+# Test 11: nginx_detect_https_port auto-detects stream 443 multiplexing
+test_case "nginx_detect_https_port auto-detects stream 443 multiplexing backend port"
+cat << 'EOF' > "$NGINX_MAIN_CONF"
+events { worker_connections 1024; }
+stream {
+    upstream web_backend {
+        server 127.0.0.1:8443;
+    }
+    upstream ssh_backend {
+        server 127.0.0.1:22;
+    }
+    map $ssl_preread_protocol $upstream {
+        "" ssh_backend;
+        default web_backend;
+    }
+    server {
+        listen 443;
+        proxy_pass $upstream;
+        ssl_preread on;
+    }
+}
+http {
+    include mime.types;
+}
+EOF
+assert_eq "$(nginx_detect_https_port)" "8443" "Auto-detected 8443 from stream web_backend"
+
 test_summary

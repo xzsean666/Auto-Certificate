@@ -262,6 +262,65 @@ nginx_detect_paths() {
     fi
 }
 
+# 7.6 Detect Effective HTTPS Listen Port (Auto-detect Stream Multiplexing)
+nginx_detect_https_port() {
+    local candidate="${1:-${HTTPS_PORT:-${DEFAULT_HTTPS_PORT:-auto}}}"
+
+    # If explicit numeric port provided, validate and use it directly
+    if [[ "$candidate" =~ ^[0-9]+$ ]] && [ "$candidate" -ge 1 ] && [ "$candidate" -le 65535 ]; then
+        echo "$candidate"
+        return 0
+    fi
+
+    # Auto-detection mode
+    nginx_detect_paths
+    local main_conf="${NGINX_MAIN_CONF:-/etc/nginx/nginx.conf}"
+    if [ -f "$main_conf" ]; then
+        # Collect stream configuration files (main_conf and any included stream/tcp configs)
+        local search_files=("$main_conf")
+        local inc_pattern
+        inc_pattern="$(grep -oP 'include\s+\K[^;]+' "$main_conf" 2>/dev/null | grep -E '(tcp|stream)' || true)"
+        if [ -n "$inc_pattern" ]; then
+            for inc in $inc_pattern; do
+                for f in $inc; do
+                    [ -f "$f" ] && search_files+=("$f")
+                done
+            done
+        fi
+
+        # Check if stream block listens on 443 with ssl_preread
+        local has_stream_443=0
+        for f in "${search_files[@]}"; do
+            if grep -qE 'listen\s+443(\s+|;)' "$f" 2>/dev/null && grep -q 'ssl_preread' "$f" 2>/dev/null; then
+                has_stream_443=1
+                break
+            fi
+        done
+
+        if [ "$has_stream_443" -eq 1 ]; then
+            local detected_port=""
+            for f in "${search_files[@]}"; do
+                # 1. Match upstream web_backend / https_backend / ssl_backend
+                detected_port="$(awk '/upstream[[:space:]]+(web|https|ssl|default)[^{]*\{/,/\}/' "$f" 2>/dev/null | grep -oP 'server\s+127\.0\.0\.1:\K[0-9]+' | head -n 1 || true)"
+                [ -n "$detected_port" ] && break
+
+                # 2. General stream upstream with 127.0.0.1:port (excluding SSH port 22)
+                detected_port="$(grep -oP 'server\s+127\.0\.0\.1:\K[0-9]+' "$f" 2>/dev/null | grep -v -E '^22$' | head -n 1 || true)"
+                [ -n "$detected_port" ] && break
+            done
+
+            if [ -n "$detected_port" ]; then
+                echo "$detected_port"
+                return 0
+            fi
+        fi
+    fi
+
+    # Fallback to standard 443
+    echo "443"
+    return 0
+}
+
 # 8. Ensure essential directories exist
 nginx_ensure_dirs() {
     nginx_detect_paths
