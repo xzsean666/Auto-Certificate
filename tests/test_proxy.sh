@@ -187,4 +187,41 @@ assert_file_exists "$NGINX_CONF_DIR/custom-port.example.com.conf" "Custom port s
 conf_custom="$(cat "$NGINX_CONF_DIR/custom-port.example.com.conf")"
 assert_contains "$conf_custom" "listen 8443 ssl;" "Site config contains listen 8443 ssl;"
 
+# Test 11: Bearer Token authentication rendering
+test_case "proxy_render_config and proxy_render_http_config generate Bearer auth directives"
+rendered_auth="$(proxy_render_config "secure-api.example.com" "127.0.0.1:8000" "/etc/ssl/cert.pem" "/etc/ssl/key.pem" "1" "50m" "1" "443" "sk-secret-token-123")"
+assert_contains "$rendered_auth" 'set $auth_valid 0;' "Contains auth_valid initialization"
+assert_contains "$rendered_auth" 'Bearer\s+(sk-secret-token-123)' "Contains Bearer token regex check"
+assert_contains "$rendered_auth" '$request_method = OPTIONS' "Contains OPTIONS CORS preflight bypass"
+assert_contains "$rendered_auth" 'return 401' "Contains 401 Unauthorized return"
+assert_contains "$rendered_auth" 'WWW-Authenticate' "Contains WWW-Authenticate response header"
+
+# Multi-token rendering
+rendered_multi="$(proxy_render_config "multi-auth.example.com" "127.0.0.1:8000" "/etc/ssl/cert.pem" "/etc/ssl/key.pem" "1" "50m" "1" "443" "token1, token2, token3")"
+assert_contains "$rendered_multi" 'Bearer\s+(token1|token2|token3)' "Contains multi-token alternation regex"
+
+# HTTP-only with Bearer auth
+rendered_http_auth="$(proxy_render_http_config "http-auth.example.com" "127.0.0.1:8000" "50m" "1" "sk-http-123")"
+assert_contains "$rendered_http_auth" 'Bearer\s+(sk-http-123)' "Contains Bearer auth in HTTP mode"
+
+# Test 12: proxy_add_site with Bearer Token auth
+test_case "proxy_add_site persists Bearer Token authentication into nginx config and .tokens file"
+export NGX_TOKENS_DIR="$SANDBOX/.tokens"
+proxy_add_site "bearer-site.example.com" "127.0.0.1:9090" "admin@example.com" "1" "50m" "1" "0" "1" "1" "1" "dns_cf" "token_xyz" "443" "sk-prod-super-secret"
+assert_file_exists "$NGINX_CONF_DIR/bearer-site.example.com.conf" "Bearer auth site conf created"
+conf_bearer="$(cat "$NGINX_CONF_DIR/bearer-site.example.com.conf")"
+assert_contains "$conf_bearer" 'Bearer\s+(sk-prod-super-secret)' "Site config contains Bearer check"
+assert_contains "$conf_bearer" 'return 401' "Site config returns 401 when unauthenticated"
+assert_file_exists "$NGX_TOKENS_DIR/bearer-site.example.com.token" "Custom token saved to .tokens/ directory"
+
+# Test 13: proxy_add_site auto-generates Bearer token when token is 'auto' and stores to gitignored .tokens/
+test_case "proxy_add_site auto-generates Bearer Token into .tokens directory"
+proxy_add_site "auto-bearer.example.com" "127.0.0.1:9091" "admin@example.com" "1" "50m" "1" "0" "1" "1" "1" "dns_cf" "token_xyz" "443" "auto"
+assert_file_exists "$NGINX_CONF_DIR/auto-bearer.example.com.conf" "Auto-bearer site conf created"
+assert_file_exists "$NGX_TOKENS_DIR/auto-bearer.example.com.token" "Token saved in .tokens directory"
+gen_tok="$(cat "$NGX_TOKENS_DIR/auto-bearer.example.com.token")"
+assert_contains "$gen_tok" "sk-" "Generated token has sk- prefix"
+conf_auto="$(cat "$NGINX_CONF_DIR/auto-bearer.example.com.conf")"
+assert_contains "$conf_auto" "$gen_tok" "Nginx config contains the auto-generated token"
+
 test_summary

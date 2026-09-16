@@ -18,6 +18,10 @@ config.env
 /var/log/ngx-cert-manager.log
 .ngx-cert-manager/
 
+# Generated Auth Tokens & Credentials
+.tokens/
+*.token
+
 # Test output & temp directories
 tests/tmp/
 tests/fixtures/tmp/

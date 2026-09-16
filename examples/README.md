@@ -13,6 +13,7 @@
 | [**`03_multiple_websites.sh`**](file:///home/sean/git/Auto-Certificate/examples/03_multiple_websites.sh) | **单机多网站/多域名独立托管** | 多租户解耦隔离，各站点独立证书与配置文件 |
 | [**`04_unix_socket_upstream.sh`**](file:///home/sean/git/Auto-Certificate/examples/04_unix_socket_upstream.sh) | **Unix Domain Socket 高性能后端** | `unix:/run/app.sock:` 本地高性能进程通信 |
 | [**`05_auto_renew_management.sh`**](file:///home/sean/git/Auto-Certificate/examples/05_auto_renew_management.sh) | **自动续期守护监控与演练** | Systemd Timer 状态、Dry-run 演练、审计日志 |
+| [**`06_bearer_auth_proxy.sh`**](file:///home/sean/git/Auto-Certificate/examples/06_bearer_auth_proxy.sh) | **无鉴权后端添加 Nginx Bearer 鉴权** | `--auth-bearer <token>`，保护 Ollama / 本地微服务 |
 
 ---
 
@@ -48,6 +49,33 @@
 - **防拥塞抖动**：内置 `RandomizedDelaySec=3600`，随机打散在 1 小时窗口内，防止数万台机器在同一秒向 Let's Encrypt CA 发起请求。
 - **智能续期条件**：仅当证书剩余天数 **<= 30 天** 时才会发起续期；若大于 30 天则自动跳过，避免浪费 API 额度。
 - **平滑生效**：证书续期成功后，会自动触发 `nginx -s reload` 平滑加载新证书，**服务零中断、无需重启 Nginx**。
+
+### 4. 如何为无鉴权的后端服务添加 Bearer Token 访问鉴权？
+当反代本地无鉴权服务（例如本地运行的 Ollama LLM、Prometheus、Node/Python 内部接口等）时，直接暴露到公网或内网是非常危险的。
+`ngx-cert-manager` 原生支持在 Nginx 层添加 Bearer Token 校验：
+- **CLI 命令行**：
+  - **自动生成 Token 并写入 `.tokens/`**（已在 `.gitignore` 中）：直接指定 `--auth-bearer` 或 `--gen-bearer`：
+    ```bash
+    sudo ngx-cert site add \
+        --domain ai.example.com \
+        --upstream 127.0.0.1:11434 \
+        --auth-bearer \
+        --email admin@example.com
+    # 系统会自动生成 sk-xxxx 并安全保存在 .tokens/ai.example.com.token (chmod 600)
+    ```
+  - **自定义指定 Token**：
+    ```bash
+    sudo ngx-cert site add \
+        --domain ai.example.com \
+        --upstream 127.0.0.1:11434 \
+        --auth-bearer "sk-my-super-secret-token" \
+        --email admin@example.com
+    ```
+- **TUI 交互向导**：向导第 9 步会自动询问 `是否需要由 Nginx 增加 Bearer Token 鉴权保护?`，直接按 Enter 留空即可自动生成高强度 Token 并存入 `.tokens/` 目录。
+- **自动忽略防泄露**：生成的 `.tokens/` 目录和 `*.token` 文件已被加入 `.gitignore`，且权限强制设置为 `600`，彻底避免 Git 提交泄露。
+- **多 Token 支持**：支持传入逗号分隔的多组 Token（如 `"token1, token2"`）。
+- **CORS 预检支持**：自动放行浏览器 `OPTIONS` 跨域预检请求，避免跨域 Web 前端调用因鉴权报错。
+- **未授权拦截**：未携带或携带错误凭证的请求直接由 Nginx 响应 `401 Unauthorized`，完全阻断流量打到后端服务。
 
 ---
 

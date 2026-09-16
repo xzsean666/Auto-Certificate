@@ -35,6 +35,36 @@ proxy_normalize_upstream() {
     fi
 }
 
+# Helper: generate Bearer auth block into temporary file if token is specified
+_proxy_create_bearer_auth_snippet() {
+    local token="$1"
+    [ -z "$token" ] && return 0
+
+    # Normalize token: replace spaces, commas to pipe (|) regex alternation
+    local clean_token
+    clean_token="$(echo "$token" | tr -d ' ' | tr ',' '|')"
+
+    local auth_tmp
+    auth_tmp="$(mktemp /tmp/ngx_bearer_XXXXXX.conf 2>/dev/null || mktemp)"
+    cat << EOF > "$auth_tmp"
+        # Bearer Token 访问鉴权 (保护无鉴权后端)
+        set \$auth_valid 0;
+        if (\$http_authorization ~* "^Bearer\s+(${clean_token})\$") {
+            set \$auth_valid 1;
+        }
+        # 放行 CORS OPTIONS 预检请求 (兼容前端跨域)
+        if (\$request_method = OPTIONS) {
+            set \$auth_valid 1;
+        }
+        if (\$auth_valid = 0) {
+            add_header Content-Type application/json always;
+            add_header WWW-Authenticate 'Bearer realm="Restricted Access"' always;
+            return 401 '{"code":401,"error":"Unauthorized","message":"Invalid or missing Bearer token"}\n';
+        }
+EOF
+    echo "$auth_tmp"
+}
+
 # 2. Render Nginx Reverse Proxy Configuration (SSL Mode)
 proxy_render_config() {
     local domain="$1"
@@ -45,6 +75,7 @@ proxy_render_config() {
     local body_size="${6:-$DEFAULT_CLIENT_MAX_BODY_SIZE}"
     local ws="${7:-$DEFAULT_ENABLE_WEBSOCKET}"
     local custom_port="${8:-}"
+    local bearer_token="${9:-}"
 
     local https_port
     https_port="$(nginx_detect_https_port "$custom_port")"
@@ -89,24 +120,54 @@ proxy_render_config() {
         hsts_line='add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;'
     fi
 
+    # Bearer Auth snippet file
+    local auth_snippet_file=""
+    if [ -n "$bearer_token" ]; then
+        auth_snippet_file="$(_proxy_create_bearer_auth_snippet "$bearer_token")"
+    fi
+
     # Read template and substitute variables safely
-    sed \
-        -e "s|{{DOMAIN}}|${domain}|g" \
-        -e "s|{{CREATED_AT}}|${now_str}|g" \
-        -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
-        -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
-        -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
-        -e "s|{{SSL_LISTEN_443}}|${ssl_listen_443}|g" \
-        -e "s|{{IPV6_LISTEN_443}}|${ipv6_443}|g" \
-        -e "s|{{HTTP2_DIRECTIVE}}|${http2_directive}|g" \
-        -e "s|{{SSL_CERT_PATH}}|${cert_path}|g" \
-        -e "s|{{SSL_KEY_PATH}}|${key_path}|g" \
-        -e "s|{{HSTS_HEADER}}|${hsts_line}|g" \
-        -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-        -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
-        -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-60s}|g" \
-        -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-60s}|g" \
-        "$tpl_file"
+    local rendered
+    if [ -n "$auth_snippet_file" ] && [ -f "$auth_snippet_file" ]; then
+        rendered="$(sed \
+            -e "s|{{DOMAIN}}|${domain}|g" \
+            -e "s|{{CREATED_AT}}|${now_str}|g" \
+            -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+            -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
+            -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
+            -e "s|{{SSL_LISTEN_443}}|${ssl_listen_443}|g" \
+            -e "s|{{IPV6_LISTEN_443}}|${ipv6_443}|g" \
+            -e "s|{{HTTP2_DIRECTIVE}}|${http2_directive}|g" \
+            -e "s|{{SSL_CERT_PATH}}|${cert_path}|g" \
+            -e "s|{{SSL_KEY_PATH}}|${key_path}|g" \
+            -e "s|{{HSTS_HEADER}}|${hsts_line}|g" \
+            -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
+            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
+            -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-600s}|g" \
+            -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-600s}|g" \
+            "$tpl_file" | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}")"
+        rm -f "$auth_snippet_file"
+    else
+        rendered="$(sed \
+            -e "s|{{DOMAIN}}|${domain}|g" \
+            -e "s|{{CREATED_AT}}|${now_str}|g" \
+            -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+            -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
+            -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
+            -e "s|{{SSL_LISTEN_443}}|${ssl_listen_443}|g" \
+            -e "s|{{IPV6_LISTEN_443}}|${ipv6_443}|g" \
+            -e "s|{{HTTP2_DIRECTIVE}}|${http2_directive}|g" \
+            -e "s|{{SSL_CERT_PATH}}|${cert_path}|g" \
+            -e "s|{{SSL_KEY_PATH}}|${key_path}|g" \
+            -e "s|{{HSTS_HEADER}}|${hsts_line}|g" \
+            -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
+            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
+            -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-600s}|g" \
+            -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-600s}|g" \
+            -e "/{{BEARER_AUTH_DIRECTIVE}}/d" \
+            "$tpl_file")"
+    fi
+    printf "%s\n" "$rendered"
 }
 
 # 3. Render Nginx Reverse Proxy Configuration (HTTP-Only / Cloudflare Proxy Mode)
@@ -115,6 +176,7 @@ proxy_render_http_config() {
     local upstream="$2"
     local body_size="${3:-$DEFAULT_CLIENT_MAX_BODY_SIZE}"
     local ws="${4:-$DEFAULT_ENABLE_WEBSOCKET}"
+    local bearer_token="${5:-}"
 
     local tpl_dir="${NGX_TEMPLATES_DIR:-$_SCRIPT_DIR/../templates}"
     local tpl_file="${tpl_dir}/proxy-http.conf.tpl"
@@ -134,17 +196,40 @@ proxy_render_http_config() {
         ipv6_80="listen [::]:80;"
     fi
 
-    sed \
-        -e "s|{{DOMAIN}}|${domain}|g" \
-        -e "s|{{CREATED_AT}}|${now_str}|g" \
-        -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
-        -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
-        -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
-        -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-        -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
-        -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-60s}|g" \
-        -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-60s}|g" \
-        "$tpl_file"
+    local auth_snippet_file=""
+    if [ -n "$bearer_token" ]; then
+        auth_snippet_file="$(_proxy_create_bearer_auth_snippet "$bearer_token")"
+    fi
+
+    local rendered
+    if [ -n "$auth_snippet_file" ] && [ -f "$auth_snippet_file" ]; then
+        rendered="$(sed \
+            -e "s|{{DOMAIN}}|${domain}|g" \
+            -e "s|{{CREATED_AT}}|${now_str}|g" \
+            -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+            -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
+            -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
+            -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
+            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
+            -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-600s}|g" \
+            -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-600s}|g" \
+            "$tpl_file" | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}")"
+        rm -f "$auth_snippet_file"
+    else
+        rendered="$(sed \
+            -e "s|{{DOMAIN}}|${domain}|g" \
+            -e "s|{{CREATED_AT}}|${now_str}|g" \
+            -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+            -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
+            -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
+            -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
+            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
+            -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-600s}|g" \
+            -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-600s}|g" \
+            -e "/{{BEARER_AUTH_DIRECTIVE}}/d" \
+            "$tpl_file")"
+    fi
+    printf "%s\n" "$rendered"
 }
 
 # 4. Transactional Write & Atomic Rollback Engine
@@ -223,10 +308,48 @@ proxy_add_site() {
     local dns_mode="${11:-auto}"
     local cf_token="${12:-}"
     local custom_https_port="${13:-}"
+    local bearer_token="${14:-}"
 
     if [ -z "$domain" ] || [ -z "$upstream" ]; then
         ui_error "必须指定域名 (--domain) 与上游地址 (--upstream)。"
         return 1
+    fi
+
+    # Handle Bearer Token resolution (auto-generate vs custom token)
+    local token_file_saved=""
+    if [ "$bearer_token" = "auto" ] || [ "$bearer_token" = "gen" ] || [ "$bearer_token" = "1" ] || [ "$bearer_token" = "true" ]; then
+        local tokens_dir="${NGX_TOKENS_DIR:-${NGX_APP_ROOT:-$_SCRIPT_DIR/..}/.tokens}"
+        mkdir -p "$tokens_dir" 2>/dev/null || {
+            tokens_dir="${HOME:-/tmp}/.ngx-cert-manager/tokens"
+            mkdir -p "$tokens_dir" 2>/dev/null || true
+        }
+        chmod 700 "$tokens_dir" 2>/dev/null || true
+
+        local random_part=""
+        if command -v openssl >/dev/null 2>&1; then
+            random_part="$(openssl rand -hex 24 2>/dev/null || true)"
+        fi
+        if [ -z "$random_part" ]; then
+            random_part="$(tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c 48 || date +%s%N | md5sum | head -c 48)"
+        fi
+        bearer_token="sk-${random_part}"
+        local token_file="${tokens_dir}/${domain}.token"
+        echo "$bearer_token" > "$token_file"
+        chmod 600 "$token_file" 2>/dev/null || true
+        token_file_saved="$token_file"
+
+        ui_success "已为 ${domain} 自动生成高强度 Bearer Token 并保存至: ${token_file}"
+        ui_info "自动生成的 Token 密钥: ${bearer_token}"
+    elif [ -n "$bearer_token" ]; then
+        # User specified token, also save to .tokens directory for record & convenience
+        local tokens_dir="${NGX_TOKENS_DIR:-${NGX_APP_ROOT:-$_SCRIPT_DIR/..}/.tokens}"
+        if mkdir -p "$tokens_dir" 2>/dev/null; then
+            chmod 700 "$tokens_dir" 2>/dev/null || true
+            local token_file="${tokens_dir}/${domain}.token"
+            echo "$bearer_token" > "$token_file"
+            chmod 600 "$token_file" 2>/dev/null || true
+            token_file_saved="$token_file"
+        fi
     fi
 
     # Determine whether to use Cloudflare DNS-01 mode
@@ -253,12 +376,16 @@ proxy_add_site() {
     if [ "$ssl_enabled" = "0" ] || [ "$ssl_enabled" = "false" ] || [ "$ssl_enabled" = "--no-ssl" ] || [ "$ssl_enabled" = "--http-only" ]; then
         ui_info "配置模式: 纯 HTTP 80 端口反向代理 (适用于 Cloudflare 边缘 SSL / 内网转发)..."
         local rendered_http
-        rendered_http="$(proxy_render_http_config "$domain" "$upstream" "$body_size" "$ws")"
+        rendered_http="$(proxy_render_http_config "$domain" "$upstream" "$body_size" "$ws" "$bearer_token")"
 
         if proxy_apply_site_config "$domain" "$rendered_http"; then
             ui_section "🎉 站点 ${domain} (HTTP 模式) 配置完成"
             ui_info "访问入口: http://${domain}"
             ui_info "上游目标: $(proxy_normalize_upstream "$upstream")"
+            if [ -n "$bearer_token" ]; then
+                ui_info "鉴权保护: 已启用 Bearer Token 访问控制 (HTTP 401 拦截未授权请求)"
+                [ -n "$token_file_saved" ] && ui_info "凭证存储: Token 密钥已保存在 ${token_file_saved} (已加入 .gitignore，权限: 600)"
+            fi
             ui_info "Nginx 配置文件: ${NGINX_CONF_DIR:-/etc/nginx/conf.d}/${domain}.conf"
             return 0
         else
@@ -362,12 +489,16 @@ EOF
     fi
 
     local rendered
-    rendered="$(proxy_render_config "$domain" "$upstream" "$cert_path" "$key_path" "$hsts" "$body_size" "$ws" "$effective_https_port")"
+    rendered="$(proxy_render_config "$domain" "$upstream" "$cert_path" "$key_path" "$hsts" "$body_size" "$ws" "$effective_https_port" "$bearer_token")"
 
     if proxy_apply_site_config "$domain" "$rendered"; then
         ui_section "🎉 站点 ${domain} 配置完成"
         ui_info "访问入口: https://${domain}"
         ui_info "上游目标: $(proxy_normalize_upstream "$upstream")"
+        if [ -n "$bearer_token" ]; then
+            ui_info "鉴权保护: 已启用 Bearer Token 访问控制 (HTTP 401 拦截未授权请求)"
+            [ -n "$token_file_saved" ] && ui_info "凭证存储: Token 密钥已保存在 ${token_file_saved} (已加入 .gitignore，权限: 600)"
+        fi
         ui_info "SSL 证书: ${cert_path}"
         ui_info "Nginx 配置文件: ${NGINX_CONF_DIR:-/etc/nginx/conf.d}/${domain}.conf"
         return 0
@@ -466,6 +597,14 @@ proxy_get_site() {
     if [ -f "$conf_file" ]; then
         ui_section "站点配置文件: $conf_file"
         cat "$conf_file"
+
+        local tokens_dir="${NGX_TOKENS_DIR:-${NGX_APP_ROOT:-$_SCRIPT_DIR/..}/.tokens}"
+        local token_file="${tokens_dir}/${domain}.token"
+        if [ -f "$token_file" ]; then
+            echo ""
+            ui_info "【关联 Bearer Token 凭据】: $token_file"
+            echo "  Token: $(cat "$token_file")"
+        fi
         return 0
     else
         ui_error "未找到站点 ${domain} 的配置文件 ($conf_file)。"
@@ -493,6 +632,15 @@ proxy_delete_site() {
         mkdir -p "$backup_dir" 2>/dev/null || true
         cp "$conf_file" "${backup_dir}/${domain}_deleted_$(date +%s).bak" 2>/dev/null || true
         rm -f "$conf_file"
+
+        # Cleanup associated token file if present
+        local tokens_dir="${NGX_TOKENS_DIR:-${NGX_APP_ROOT:-$_SCRIPT_DIR/..}/.tokens}"
+        local token_file="${tokens_dir}/${domain}.token"
+        if [ -f "$token_file" ]; then
+            rm -f "$token_file" 2>/dev/null || true
+            ui_info "已清理关联的 Bearer Token 文件: $token_file"
+        fi
+
         nginx_reload || true
         ui_success "站点 ${domain} 反向代理配置已移除。"
     fi

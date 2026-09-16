@@ -249,12 +249,12 @@ nginx_detect_paths() {
         fi
     fi
 
-    # 2. Detect NGINX_CONF_DIR if not set or default /etc/nginx/conf.d does not exist
+    # 2. Detect NGINX_CONF_DIR if not set or default /etc/nginx/conf.d is not the active vhost path
     if [ -f "${NGINX_MAIN_CONF:-}" ]; then
-        if [ -z "${NGINX_CONF_DIR:-}" ] || { [ "${NGINX_CONF_DIR}" = "/etc/nginx/conf.d" ] && [ ! -d "/etc/nginx/conf.d" ]; }; then
-            local inc_dir=""
-            inc_dir="$(grep -oP 'include\s+\K[^;]+(?=/\*\.conf;)' "$NGINX_MAIN_CONF" 2>/dev/null | grep -v -E '(tcp|stream)' | head -n 1 || true)"
-            if [ -n "$inc_dir" ] && [ -d "$inc_dir" ]; then
+        local inc_dir=""
+        inc_dir="$(grep -oP 'include\s+\K[^;]+(?=/\*\.conf;)' "$NGINX_MAIN_CONF" 2>/dev/null | grep -v -E '(tcp|stream)' | head -n 1 || true)"
+        if [ -n "$inc_dir" ] && [ -d "$inc_dir" ]; then
+            if [ -z "${NGINX_CONF_DIR:-}" ] || [ "${NGINX_CONF_DIR}" = "/etc/nginx/conf.d" ]; then
                 export NGINX_CONF_DIR="$inc_dir"
                 export NGINX_BACKUP_DIR="${NGINX_CONF_DIR}/.backup"
             fi

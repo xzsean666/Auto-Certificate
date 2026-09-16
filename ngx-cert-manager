@@ -90,6 +90,8 @@ ngx-cert-manager - Nginx & Let's Encrypt 一体化运维管理套件 v${NGX_CERT
       --staging             使用 Let's Encrypt Staging 沙箱测试环境
       --no-ssl, --http-only 仅配置 HTTP 80 端口反代 (适用于 Cloudflare Flexible SSL 代理或内网)
       --https-port <port>   内部 HTTPS 监听端口 (默认: auto 自动识别分流架构或标准 443)
+      --auth-bearer [token] 为无鉴权后端添加 Bearer 鉴权 (若不传或指定 auto 则自动生成高强度 Token 存入 .tokens/)
+      --gen-bearer          自动生成高强度 Bearer Token 鉴权并保存至 .tokens/
     site list               列出所有受管反向代理站点
     site get                查看指定站点的 Nginx 配置文件
       --domain <domain>     目标域名
@@ -214,6 +216,7 @@ cmd_site() {
             local cert_mode="auto"
             local cf_token=""
             local https_port=""
+            local bearer_token=""
 
             while [ $# -gt 0 ]; do
                 case "$1" in
@@ -239,11 +242,29 @@ cmd_site() {
                     --webroot) cert_mode="webroot"; shift ;;
                     --https-port|--port) https_port="$2"; shift 2 ;;
                     --https-port=*|--port=*) https_port="${1#*=}"; shift ;;
+                    --auth-bearer|--bearer-token|--bearer)
+                        if [ -n "${2:-}" ] && [[ "$2" != --* ]]; then
+                            bearer_token="$2"
+                            shift 2
+                        else
+                            bearer_token="auto"
+                            shift 1
+                        fi
+                        ;;
+                    --auth-bearer=*|--bearer-token=*|--bearer=*)
+                        bearer_token="${1#*=}"
+                        [ -z "$bearer_token" ] && bearer_token="auto"
+                        shift
+                        ;;
+                    --gen-bearer)
+                        bearer_token="auto"
+                        shift
+                        ;;
                     *) shift ;;
                 esac
             done
 
-            proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled" "$cert_mode" "$cf_token" "$https_port"
+            proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled" "$cert_mode" "$cf_token" "$https_port" "$bearer_token"
             ;;
         *)
             ui_error "未知的 site 操作: $action"
@@ -457,6 +478,12 @@ tui_wizard_add_site() {
     local body_size
     body_size="$(ui_prompt "8. 客户端请求体大小限制 (client_max_body_size)" "${DEFAULT_CLIENT_MAX_BODY_SIZE:-50m}")"
 
+    local auth_bearer=""
+    if ui_confirm "9. 后端是否为无鉴权服务，需要由 Nginx 增加 Bearer Token 鉴权保护?" "N"; then
+        auth_bearer="$(ui_prompt "   请输入期望的 Bearer Token (留空直接回车则自动生成并存入 .tokens/ 目录)" "auto")"
+        [ -z "$auth_bearer" ] && auth_bearer="auto"
+    fi
+
     echo ""
     ui_info "配置概要确认:"
     echo "  - 域名: $domain"
@@ -467,11 +494,18 @@ tui_wizard_add_site() {
     [ "$enable_ssl" -eq 1 ] && echo "  - HSTS: $([ "$enable_hsts" -eq 1 ] && echo "开启" || echo "关闭")"
     echo "  - WebSocket: $([ "$enable_ws" -eq 1 ] && echo "开启" || echo "关闭")"
     echo "  - 上传限制: $body_size"
+    if [ "$auth_bearer" = "auto" ]; then
+        echo "  - Bearer 鉴权: 已开启 (将在部署时自动生成高强度 Token 并存入 .tokens/ 目录)"
+    elif [ -n "$auth_bearer" ]; then
+        echo "  - Bearer 鉴权: 已开启 (指定 Token: $auth_bearer)"
+    else
+        echo "  - Bearer 鉴权: 未启用 (直接透传)"
+    fi
     [ "$enable_ssl" -eq 1 ] && echo "  - 环境: $([ "$staging" -eq 1 ] && echo "Staging 沙箱" || echo "生产环境")"
     echo ""
 
     if ui_confirm "确认立即开始自动化部署?" "Y"; then
-        proxy_add_site "$domain" "$upstream" "$email" "$enable_hsts" "$body_size" "$enable_ws" "0" "$staging" "0" "$enable_ssl" "$cert_mode" "$cf_token"
+        proxy_add_site "$domain" "$upstream" "$email" "$enable_hsts" "$body_size" "$enable_ws" "0" "$staging" "0" "$enable_ssl" "$cert_mode" "$cf_token" "" "$auth_bearer"
     else
         ui_warn "已取消部署。"
     fi

@@ -108,6 +108,34 @@ sudo ngx-cert cert issue --domain "*.example.com" --email admin@example.com --dn
 
 ---
 
+### 场景 8：反代无鉴权后端服务，在 Nginx 网关层强制 Bearer Token 鉴权
+> **说明**：当反代本地无鉴权服务（例如本地 Ollama `127.0.0.1:11434`、Prometheus `9090`、内网 Python/Node 服务）时，通过 `--auth-bearer` 在 Nginx 网关层强制拦截未携带或错误 Bearer Token 的请求（响应 `401 Unauthorized`），自动放行跨域 `OPTIONS` 预检请求。若不指定 Token，系统会自动生成高强度 Token 并安全保存在 gitignored 的 `.tokens/` 目录中。
+
+```bash
+# 模式 A: 自动生成高强度 Token 并保存至 .tokens/ 目录 (受 .gitignore 保护)
+sudo ngx-cert site add \
+    --domain ai.example.com \
+    --upstream 127.0.0.1:11434 \
+    --email admin@example.com \
+    --auth-bearer
+
+# 模式 B: 自定义指定单 Token
+sudo ngx-cert site add \
+    --domain ai.example.com \
+    --upstream 127.0.0.1:11434 \
+    --email admin@example.com \
+    --auth-bearer "sk-my-super-secret-token"
+
+# 模式 C: 多 Token 保护 (英文逗号分隔)
+sudo ngx-cert site add \
+    --domain api.example.com \
+    --upstream 127.0.0.1:8080 \
+    --email admin@example.com \
+    --auth-bearer "token_user1, token_user2"
+```
+
+---
+
 ## 二、什么是 Unix Domain Socket 反代 (示例 04 原理解析)
 
 在 Linux 环境下，当你的后端程序（如 Python FastAPI / Flask / Django、Node.js、PHP-FPM、Go）与 Nginx 运行在**同一台物理机/云服务器**上时，反向代理有两种通信方式：
@@ -163,7 +191,7 @@ sequenceDiagram
 
 | 命令 | 参数说明 | 作用描述 |
 | :--- | :--- | :--- |
-| `ngx-cert site add` | `--domain <域名>` *(必填)*<br>`--upstream <后端地址>` *(必填)*<br>`--email <邮箱>` *(申请证书时推荐)*<br>`--dns-cf` *(启用 Cloudflare DNS-01 验证)*<br>`--cf-token <token>` *(指定 Cloudflare API Token)*<br>`--no-ssl` 或 `--http-only` *(开启纯 HTTP 反代)*<br>`--hsts` / `--no-hsts` *(开启/关闭 HSTS)*<br>`--ws` / `--no-ws` *(开启/关闭 WebSocket)*<br>`--body-size <大小>` *(上传限制，默认 50m)*<br>`--staging` *(沙箱演练测试证书)*<br>`--skip-dns-check` *(跳过 DNS 校验)* | 一键完成域名检验、证书申请、安全配置生成与平滑生效 |
+| `ngx-cert site add` | `--domain <域名>` *(必填)*<br>`--upstream <后端地址>` *(必填)*<br>`--email <邮箱>` *(申请证书时推荐)*<br>`--auth-bearer <token>` *(可选: 为无鉴权后端添加 Bearer 鉴权)*<br>`--https-port <端口>` *(可选内部 HTTPS 监听端口)*<br>`--dns-cf` *(启用 Cloudflare DNS-01 验证)*<br>`--cf-token <token>` *(指定 Cloudflare API Token)*<br>`--no-ssl` 或 `--http-only` *(开启纯 HTTP 反代)*<br>`--hsts` / `--no-hsts` *(开启/关闭 HSTS)*<br>`--ws` / `--no-ws` *(开启/关闭 WebSocket)*<br>`--body-size <大小>` *(上传限制，默认 50m)*<br>`--staging` *(沙箱演练测试证书)*<br>`--skip-dns-check` *(跳过 DNS 校验)* | 一键完成域名检验、证书申请、安全配置生成与平滑生效 |
 | `ngx-cert site list` | 无 | 查看当前服务器上所有受管站点的大盘与状态 |
 | `ngx-cert site get` | `--domain <域名>` | 打印查看指定站点的实际 Nginx 配置文件内容 |
 | `ngx-cert site delete` | `--domain <域名>`<br>`--delete-cert` *(可选同时吊销证书)* | 安全归档并移除站点配置，平滑重载 Nginx |
