@@ -776,3 +776,189 @@ proxy_delete_site() {
 
     return 0
 }
+
+# 8. Update, Rotate or Remove Bearer Token for a Site
+proxy_update_bearer_token() {
+    local domain="$1"
+    local new_token="${2:-auto}"
+    local is_remove="${3:-0}"
+
+    nginx_detect_paths
+    local conf_dir="${NGINX_CONF_DIR:-/etc/nginx/conf.d}"
+    local conf_file="${conf_dir}/${domain}.conf"
+
+    if [ -z "$domain" ]; then
+        ui_error "必须指定目标域名 (--domain)。"
+        return 1
+    fi
+
+    if [ ! -f "$conf_file" ]; then
+        ui_error "未找到域名 ${domain} 的 Nginx 配置文件 (${conf_file})。"
+        return 1
+    fi
+
+    local tokens_dir="${NGX_TOKENS_DIR:-${NGX_APP_ROOT:-$_SCRIPT_DIR/..}/.tokens}"
+    mkdir -p "$tokens_dir" 2>/dev/null || {
+        tokens_dir="${HOME:-/tmp}/.ngx-cert-manager/tokens"
+        mkdir -p "$tokens_dir" 2>/dev/null || true
+    }
+    chmod 700 "$tokens_dir" 2>/dev/null || true
+    local token_file="${tokens_dir}/${domain}.token"
+
+    # Branch A: Remove Bearer auth from site
+    if [ "$is_remove" = "1" ] || [ "$new_token" = "--remove" ] || [ "$new_token" = "remove" ] || [ "$new_token" = "disable" ]; then
+        ui_info "正在为站点 ${domain} 移除 Bearer Token 访问鉴权..."
+
+        local filtered_conf
+        filtered_conf="$(awk '
+        BEGIN { in_auth = 0; seen_return = 0; }
+        /# Bearer Token 访问鉴权/ { in_auth = 1; next; }
+        in_auth {
+            if ($0 ~ /return 401/) { seen_return = 1; next; }
+            if (seen_return && $0 ~ /^[[:space:]]*}[[:space:]]*$/) { in_auth = 0; seen_return = 0; next; }
+            next;
+        }
+        { print; }
+        ' "$conf_file")"
+
+        if proxy_apply_site_config "$domain" "$filtered_conf"; then
+            rm -f "$token_file" 2>/dev/null || true
+            ui_success "站点 ${domain} 的 Bearer 鉴权已成功移除，流量恢复完全透传。"
+            return 0
+        else
+            ui_error "移除 Bearer 鉴权失败，Nginx 配置已自动安全回滚。"
+            return 1
+        fi
+    fi
+
+    # Branch B: Generate or set new Bearer token
+    local actual_token="$new_token"
+    if [ -z "$actual_token" ] || [ "$actual_token" = "auto" ] || [ "$actual_token" = "gen" ] || [ "$actual_token" = "rotate" ] || [ "$actual_token" = "--gen-bearer" ]; then
+        local random_part=""
+        if command -v openssl >/dev/null 2>&1; then
+            random_part="$(openssl rand -hex 24 2>/dev/null || true)"
+        fi
+        if [ -z "$random_part" ]; then
+            random_part="$(tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c 48 || date +%s%N | md5sum | head -c 48)"
+        fi
+        actual_token="sk-${random_part}"
+        ui_info "已自动生成高强度新密钥: ${actual_token}"
+    fi
+
+    # Create new snippet
+    local auth_snippet_file
+    auth_snippet_file="$(_proxy_create_bearer_auth_snippet "$actual_token")"
+
+    # 1. Strip existing Bearer auth block if present
+    local stripped_conf
+    stripped_conf="$(awk '
+    BEGIN { in_auth = 0; seen_return = 0; }
+    /# Bearer Token 访问鉴权/ { in_auth = 1; next; }
+    in_auth {
+        if ($0 ~ /return 401/) { seen_return = 1; next; }
+        if (seen_return && $0 ~ /^[[:space:]]*}[[:space:]]*$/) { in_auth = 0; seen_return = 0; next; }
+        next;
+    }
+    { print; }
+    ' "$conf_file")"
+
+    # 2. Insert new Bearer auth block right after location / {
+    local updated_conf
+    updated_conf="$(printf "%s\n" "$stripped_conf" | sed -e "/^[[:space:]]*location[[:space:]]\+\/[[:space:]]*{/r $auth_snippet_file")"
+    rm -f "$auth_snippet_file"
+
+    # 3. Transactional apply & rollback
+    ui_info "正在为 ${domain} 应用新 Bearer Token 并执行 Nginx 配置热重载..."
+    if proxy_apply_site_config "$domain" "$updated_conf"; then
+        echo "$actual_token" > "$token_file"
+        chmod 600 "$token_file" 2>/dev/null || true
+
+        ui_section "🎉 站点 ${domain} Bearer Token 已成功更新生效"
+        ui_info "目标域名: ${domain}"
+        ui_info "新 Token 密钥: ${actual_token}"
+        ui_info "凭据存储路径: ${token_file} (权限: 600, 已入 .gitignore)"
+        echo ""
+        ui_info "验证请求示例:"
+        echo "  curl -i -H \"Host: ${domain}\" -H \"Authorization: Bearer ${actual_token}\" http://127.0.0.1/"
+        return 0
+    else
+        ui_error "更新 Bearer Token 失败，Nginx 配置已自动安全回滚。"
+        return 1
+    fi
+}
+
+# 9. Get Stored Bearer Token by Domain
+proxy_get_bearer_token() {
+    local domain="$1"
+    if [ -z "$domain" ]; then
+        ui_error "必须指定域名 (--domain)。"
+        return 1
+    fi
+
+    local tokens_dir="${NGX_TOKENS_DIR:-${NGX_APP_ROOT:-$_SCRIPT_DIR/..}/.tokens}"
+    local token_file="${tokens_dir}/${domain}.token"
+
+    if [ -f "$token_file" ]; then
+        local tok
+        tok="$(cat "$token_file")"
+        ui_section "域名 ${domain} 的 Bearer Token 凭证"
+        ui_info "域名: $domain"
+        ui_info "Token: $tok"
+        ui_info "文件: $token_file"
+        return 0
+    else
+        # Try reading token from Nginx conf
+        nginx_detect_paths
+        local conf_file="${NGINX_CONF_DIR:-/etc/nginx/conf.d}/${domain}.conf"
+        if [ -f "$conf_file" ]; then
+            local tok_line
+            tok_line="$(grep -oP 'Bearer\\s+\K[^$)]+' "$conf_file" 2>/dev/null || grep -oP 'Bearer\s+\K[^\$)]+' "$conf_file" 2>/dev/null || true)"
+            if [ -n "$tok_line" ]; then
+                ui_section "从 Nginx 配置文件读取到 Bearer Token"
+                ui_info "域名: $domain"
+                ui_info "Token: $tok_line"
+                return 0
+            fi
+        fi
+        ui_warn "未找到域名 ${domain} 的 Bearer Token 凭证。"
+        return 1
+    fi
+}
+
+# 10. List All Stored Bearer Tokens
+proxy_list_bearer_tokens() {
+    local tokens_dir="${NGX_TOKENS_DIR:-${NGX_APP_ROOT:-$_SCRIPT_DIR/..}/.tokens}"
+    ui_section "当前已记录的 Bearer Token 凭据列表"
+
+    if [ ! -d "$tokens_dir" ]; then
+        ui_info "暂无已保存的 Bearer Token 凭证目录 ($tokens_dir)。"
+        return 0
+    fi
+
+    local count=0
+    printf "%-30s | %-42s | %-8s\n" "绑定域名 (Domain)" "Bearer Token" "凭证状态"
+    echo "-----------------------------------------------------------------------------------------"
+
+    for f in "$tokens_dir"/*.token; do
+        if [ -f "$f" ]; then
+            local fname
+            fname="$(basename "$f")"
+            local domain="${fname%.token}"
+            local tok
+            tok="$(cat "$f" 2>/dev/null || echo "读取失败")"
+            local preview="$tok"
+            if [ "${#preview}" -gt 38 ]; then
+                preview="${preview:0:16}...${preview: -16}"
+            fi
+            printf "%-30s | %-42s | %-8s\n" "$domain" "$preview" "有效"
+            count=$((count + 1))
+        fi
+    done
+
+    if [ "$count" -eq 0 ]; then
+        echo "当前未记录任何域名 Token。"
+    else
+        echo "-----------------------------------------------------------------------------------------"
+        echo "共计 ${count} 个域名关联的 Bearer Token。"
+    fi
+}

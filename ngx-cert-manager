@@ -94,12 +94,28 @@ ngx-cert-manager - Nginx & Let's Encrypt 一体化运维管理套件 v${NGX_CERT
       --gen-bearer          自动生成高强度 Bearer Token 鉴权并保存至 .tokens/
       --optimize-llm, --llm 启用 LLM/AI 深度推理与 SSE 实时流式专项优化 (自动 600s 超时、关闭响应/请求缓冲、tcp_nodelay)
       --timeout <duration>  自定义代理超时时长 (例如: 600s, 1200s, 默认普通60s/LLM 600s)
+    site update-bearer      更新或轮转指定域名的 Bearer Token 鉴权
+      --domain <domain>     目标域名 (必填)
+      --token <token>       指定新 Token (若不传或指定 auto 则自动重新生成)
+      --gen-bearer          自动生成高强度新 Token
+      --remove              移除 Bearer 鉴权并恢复透传
     site list               列出所有受管反向代理站点
     site get                查看指定站点的 Nginx 配置文件
       --domain <domain>     目标域名
     site delete             删除指定站点反向代理配置
       --domain <domain>     目标域名
       --delete-cert         同时吊销并清理对应 SSL 证书
+
+  token                     Bearer Token 密钥全生命周期管理
+    token update            根据域名更新或轮转 Bearer Token
+      --domain <domain>     目标域名 (必填)
+      --token <token>       指定新 Token (可选，默认自动生成高强度 Token)
+      --remove              移除 Bearer 鉴权
+    token get               查看指定域名的 Bearer Token 凭证
+      --domain <domain>     目标域名
+    token list              列出所有域名关联的 Bearer Token
+    token delete            移除指定域名的 Bearer 鉴权保护
+      --domain <domain>     目标域名
 
   cert                      SSL 证书全生命周期管理
     cert issue              申请签发 Let's Encrypt 证书
@@ -286,8 +302,81 @@ cmd_site() {
 
             proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled" "$cert_mode" "$cf_token" "$https_port" "$bearer_token" "$optimize_llm" "$custom_timeout"
             ;;
+        update-bearer|update-token|rotate-bearer|set-bearer)
+            local domain=""
+            local token="auto"
+            local remove=0
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) domain="$2"; shift 2 ;;
+                    --domain=*) domain="${1#*=}"; shift ;;
+                    --token) token="$2"; shift 2 ;;
+                    --token=*) token="${1#*=}"; shift ;;
+                    --gen|--auto|--gen-bearer) token="auto"; shift ;;
+                    --remove|--disable) remove=1; shift ;;
+                    *) shift ;;
+                esac
+            done
+            proxy_update_bearer_token "$domain" "$token" "$remove"
+            ;;
         *)
             ui_error "未知的 site 操作: $action"
+            show_help
+            return 1
+            ;;
+    esac
+}
+
+# Subcommand: token (Bearer Token Life-cycle Management)
+cmd_token() {
+    local action="${1:-list}"
+    shift || true
+
+    case "$action" in
+        list)
+            proxy_list_bearer_tokens
+            ;;
+        get)
+            local domain=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) domain="$2"; shift 2 ;;
+                    --domain=*) domain="${1#*=}"; shift ;;
+                    *) shift ;;
+                esac
+            done
+            proxy_get_bearer_token "$domain"
+            ;;
+        update|rotate|set)
+            local domain=""
+            local token="auto"
+            local remove=0
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) domain="$2"; shift 2 ;;
+                    --domain=*) domain="${1#*=}"; shift ;;
+                    --token) token="$2"; shift 2 ;;
+                    --token=*) token="${1#*=}"; shift ;;
+                    --gen|--auto|--gen-bearer) token="auto"; shift ;;
+                    --remove|--disable) remove=1; shift ;;
+                    *) shift ;;
+                esac
+            done
+            proxy_update_bearer_token "$domain" "$token" "$remove"
+            ;;
+        delete|remove)
+            local domain=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --domain) domain="$2"; shift 2 ;;
+                    --domain=*) domain="${1#*=}"; shift ;;
+                    *) shift ;;
+                esac
+            done
+            proxy_update_bearer_token "$domain" "" "1"
+            ;;
+        *)
+            ui_error "未知的 token 操作: $action"
             show_help
             return 1
             ;;
@@ -578,6 +667,36 @@ tui_main_loop() {
                 ;;
             2)
                 proxy_list_sites
+                echo ""
+                echo "操作选项: [1] 返回主菜单  [2] 更新/轮转站点 Bearer Token  [3] 查看站点配置  [4] 删除站点"
+                local s_act
+                s_act="$(ui_prompt "请选择操作编号 [1-4]" "1")"
+                case "$s_act" in
+                    2)
+                        local u_dom
+                        u_dom="$(ui_prompt "请输入目标域名")"
+                        if [ -n "$u_dom" ]; then
+                            local u_tok
+                            u_tok="$(ui_prompt "请输入新的 Bearer Token (留空回车则自动生成新 Token，输入 remove 移除)" "auto")"
+                            [ -z "$u_tok" ] && u_tok="auto"
+                            proxy_update_bearer_token "$u_dom" "$u_tok"
+                        fi
+                        ;;
+                    3)
+                        local g_dom
+                        g_dom="$(ui_prompt "请输入需要查看的域名")"
+                        [ -n "$g_dom" ] && proxy_get_site "$g_dom"
+                        ;;
+                    4)
+                        local d_dom
+                        d_dom="$(ui_prompt "请输入需要删除的域名")"
+                        if [ -n "$d_dom" ]; then
+                            local del_c=0
+                            ui_confirm "是否同时吊销并清理对应 SSL 证书?" "N" && del_c=1
+                            proxy_delete_site "$d_dom" "$del_c"
+                        fi
+                        ;;
+                esac
                 ;;
             3)
                 cert_list
@@ -664,6 +783,11 @@ main() {
             site)
                 shift
                 cmd_site "$@"
+                exit $?
+                ;;
+            token|bearer)
+                shift
+                cmd_token "$@"
                 exit $?
                 ;;
             cert)

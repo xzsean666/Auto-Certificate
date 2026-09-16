@@ -80,6 +80,19 @@ assert_file_exists() {
     fi
 }
 
+assert_file_not_exists() {
+    local file="$1"
+    local msg="${2:-File should not exist: $file}"
+
+    if [ ! -f "$file" ]; then
+        echo -e "  ${T_GREEN}PASS${T_RESET}: $msg"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        echo -e "  ${T_RED}FAIL${T_RESET}: $msg (File exists: $file)"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+}
+
 assert_dir_exists() {
     local dir="$1"
     local msg="${2:-Directory should exist: $dir}"

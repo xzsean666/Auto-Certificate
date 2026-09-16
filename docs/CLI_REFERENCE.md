@@ -166,6 +166,37 @@ sudo ngx-cert site add \
 
 ---
 
+### 场景 10：根据域名动态更新、轮转或移除 Bearer Token (安全轮转与零中断热生效)
+> **说明**：当密钥发生泄露、到达安全轮换周期，或者需要更换/移除 Bearer 鉴权时，系统完全基于域名（`--domain`）进行原子化管理。
+>
+> **核心机制**：
+> 1. **全自动化修改**：自动解析该域名对应的 Nginx 配置文件，精确定位并热替换/剥离 Bearer 拦截规则，不破坏原站点的反代上游、SSL 或 LLM 优化参数。
+> 2. **语法预检与平滑生效**：通过 `nginx -t` 语法沙箱预检后调用 `nginx -s reload`，实现**零停机热生效**。
+> 3. **安全凭据自动同步**：自动更新或清理 `.tokens/<domain>.token`（`chmod 600`，已加入 `.gitignore`）。
+
+```bash
+# 模式 A: 自动生成并轮转全新高强度 Token (无需手动指定)
+sudo ngx-cert site update-bearer --domain server-10001.002788.xyz
+# 或使用顶层 token 命令:
+sudo ngx-cert token update --domain server-10001.002788.xyz
+
+# 模式 B: 更新为指定的自定义 Token (支持多个 Token，逗号分隔)
+sudo ngx-cert site update-bearer --domain server-10001.002788.xyz --token "sk-new-super-secret-key"
+
+# 模式 C: 查看当前域名配置的 Bearer Token 凭证
+sudo ngx-cert token get --domain server-10001.002788.xyz
+
+# 模式 D: 列出系统中所有反代站点配置的 Bearer Token
+sudo ngx-cert token list
+
+# 模式 E: 移除该域名的 Bearer 鉴权保护 (恢复透明代理)
+sudo ngx-cert site update-bearer --domain server-10001.002788.xyz --remove
+# 或:
+sudo ngx-cert token delete --domain server-10001.002788.xyz
+```
+
+---
+
 ## 二、什么是 Unix Domain Socket 反代 (示例 04 原理解析)
 
 在 Linux 环境下，当你的后端程序（如 Python FastAPI / Flask / Django、Node.js、PHP-FPM、Go）与 Nginx 运行在**同一台物理机/云服务器**上时，反向代理有两种通信方式：
@@ -224,6 +255,7 @@ sequenceDiagram
 | `ngx-cert site add` | `--domain <域名>` *(必填)*<br>`--upstream <后端地址>` *(必填)*<br>`--email <邮箱>` *(申请证书时推荐)*<br>`--auth-bearer <token>` *(可选: 为无鉴权后端添加 Bearer 鉴权)*<br>`--https-port <端口>` *(可选内部 HTTPS 监听端口)*<br>`--dns-cf` *(启用 Cloudflare DNS-01 验证)*<br>`--cf-token <token>` *(指定 Cloudflare API Token)*<br>`--no-ssl` 或 `--http-only` *(开启纯 HTTP 反代)*<br>`--hsts` / `--no-hsts` *(开启/关闭 HSTS)*<br>`--ws` / `--no-ws` *(开启/关闭 WebSocket)*<br>`--body-size <大小>` *(上传限制，默认 50m)*<br>`--staging` *(沙箱演练测试证书)*<br>`--skip-dns-check` *(跳过 DNS 校验)* | 一键完成域名检验、证书申请、安全配置生成与平滑生效 |
 | `ngx-cert site list` | 无 | 查看当前服务器上所有受管站点的大盘与状态 |
 | `ngx-cert site get` | `--domain <域名>` | 打印查看指定站点的实际 Nginx 配置文件内容 |
+| `ngx-cert site update-bearer` | `--domain <域名>` *(必填)*<br>`--token <新Token>` *(可选指定)*<br>`--remove` *(可选移除鉴权)* | 根据域名原子更新、轮转或移除 Bearer Token 鉴权 |
 | `ngx-cert site delete` | `--domain <域名>`<br>`--delete-cert` *(可选同时吊销证书)* | 安全归档并移除站点配置，平滑重载 Nginx |
 
 ---
@@ -288,3 +320,15 @@ ngx-cert-manager --ssh root@1.2.3.4 site list
 ngx-cert-manager --ssh root@1.2.3.4 site add --domain api.example.com --upstream 127.0.0.1:8080 --email admin@example.com
 ngx-cert-manager --ssh root@1.2.3.4:2222 diagnose
 ```
+
+---
+
+### 7. Bearer Token 凭据管理 (`token`)
+
+| 命令 | 参数说明 | 作用描述 |
+| :--- | :--- | :--- |
+| `ngx-cert token update` | `--domain <域名>` *(必填)*<br>`--token <新Token>` *(可选)*<br>`--remove` *(可选)* | 根据域名原子轮转/更新 Bearer 密钥，或移除鉴权 |
+| `ngx-cert token get` | `--domain <域名>` *(必填)* | 查看指定域名当前生效的 Bearer Token 凭证 |
+| `ngx-cert token list` | 无 | 列表大盘展示所有反向代理站点的 Bearer Token 与凭据文件 |
+| `ngx-cert token delete` | `--domain <域名>` *(必填)* | 移除指定域名的 Bearer 鉴权并清理 `.tokens/` 凭据文件 |
+

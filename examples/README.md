@@ -15,6 +15,7 @@
 | [**`05_auto_renew_management.sh`**](file:///home/sean/git/Auto-Certificate/examples/05_auto_renew_management.sh) | **自动续期守护监控与演练** | Systemd Timer 状态、Dry-run 演练、审计日志 |
 | [**`06_bearer_auth_proxy.sh`**](file:///home/sean/git/Auto-Certificate/examples/06_bearer_auth_proxy.sh) | **无鉴权后端添加 Nginx Bearer 鉴权** | `--auth-bearer <token>`，保护 Ollama / 本地微服务 |
 | [**`07_llm_ai_optimized_proxy.sh`**](file:///home/sean/git/Auto-Certificate/examples/07_llm_ai_optimized_proxy.sh) | **大模型 (LLM/AI) 专项反代与流式优化** | `--optimize-llm`，600s超时 + 关闭缓冲 + SSE 流式秒推 |
+| [**`08_rotate_bearer_token.sh`**](file:///home/sean/git/Auto-Certificate/examples/08_rotate_bearer_token.sh) | **根据域名更新/轮转/移除 Bearer Token** | `token update` / `site update-bearer`，零停机平滑热生效 |
 
 ---
 
@@ -86,6 +87,36 @@
 2. **流式传输打字机效果（容易被 Nginx 缓冲阻断）**：
    - 客户端依赖 Server-Sent Events (SSE) 逐字打字推送。如果开启了 Nginx 代理缓冲（`proxy_buffering on`），Nginx 会将输出积攒到 8KB 满之后才一次性冲刷给客户端，导致前端流式卡顿变成大段吐字。
    - `--optimize-llm` 会彻底关闭缓冲（`proxy_buffering off;`、`proxy_request_buffering off;`、`tcp_nodelay on;`），实现真正的逐 Token 毫秒级打字机推送。
+
+### 6. 后续如何根据域名更新、轮转或移除已有的 Bearer Token？
+**完全支持基于域名进行一键更新与平滑热生效！**
+- **更新/自动轮转新 Token**：
+  ```bash
+  # 自动生成全新高强度 Token 并替换 (零中断热重载):
+  sudo ngx-cert site update-bearer --domain server-10001.002788.xyz
+  # 或:
+  sudo ngx-cert token update --domain server-10001.002788.xyz
+  ```
+- **手动指定新 Token**：
+  ```bash
+  sudo ngx-cert site update-bearer --domain server-10001.002788.xyz --token "sk-new-super-token"
+  ```
+- **查看与检索 Token 凭据**：
+  ```bash
+  # 查看单个域名生效的 Token:
+  sudo ngx-cert token get --domain server-10001.002788.xyz
+
+  # 列表大盘查看所有站点的 Token:
+  sudo ngx-cert token list
+  ```
+- **彻底移除 Bearer 鉴权保护 (恢复透明直通代理)**：
+  ```bash
+  sudo ngx-cert site update-bearer --domain server-10001.002788.xyz --remove
+  # 或:
+  sudo ngx-cert token delete --domain server-10001.002788.xyz
+  ```
+- **TUI 交互模式**：
+  启动 `./ngx-cert-manager`，进入 `[2] 反向代理站点管理 (Reverse Proxy)` -> `[2] 更新/轮转站点 Bearer Token`，输入域名后选择自动生成或输入新 Token 即可。
 
 ---
 

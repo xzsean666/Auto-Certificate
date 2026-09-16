@@ -257,4 +257,34 @@ assert_contains "$conf_llm" "LLM-Optimization: enabled" "Site conf contains LLM-
 assert_contains "$conf_llm" "proxy_buffering off;" "Site conf contains proxy_buffering off"
 assert_contains "$conf_llm" "proxy_read_timeout 1200s;" "Site conf respects custom 1200s timeout"
 
+# Test 17: proxy_update_bearer_token updates existing bearer token
+test_case "proxy_update_bearer_token updates token in nginx config and .tokens file"
+proxy_update_bearer_token "llm-site.example.com" "sk-new-super-token-999"
+conf_updated="$(cat "$NGINX_CONF_DIR/llm-site.example.com.conf")"
+assert_contains "$conf_updated" 'Bearer\s+(sk-new-super-token-999)' "Nginx config updated with new token"
+tok_file_updated="$(cat "$NGX_TOKENS_DIR/llm-site.example.com.token")"
+assert_eq "$tok_file_updated" "sk-new-super-token-999" "Token file updated with new token"
+
+# Test 18: proxy_update_bearer_token with auto generates new token
+test_case "proxy_update_bearer_token with auto generates and applies new token"
+proxy_update_bearer_token "llm-site.example.com" "auto"
+conf_rot="$(cat "$NGINX_CONF_DIR/llm-site.example.com.conf")"
+tok_rot="$(cat "$NGX_TOKENS_DIR/llm-site.example.com.token")"
+assert_contains "$tok_rot" "sk-" "Generated new token has sk- prefix"
+assert_contains "$conf_rot" "$tok_rot" "Nginx config updated with newly generated token"
+
+# Test 19: proxy_get_bearer_token and proxy_list_bearer_tokens
+test_case "proxy_get_bearer_token retrieves token and proxy_list_bearer_tokens outputs list"
+get_tok="$(proxy_get_bearer_token "llm-site.example.com")"
+assert_contains "$get_tok" "Token:" "proxy_get_bearer_token returns valid token output"
+list_out="$(proxy_list_bearer_tokens)"
+assert_contains "$list_out" "llm-site.example.com" "proxy_list_bearer_tokens includes domain"
+
+# Test 20: proxy_update_bearer_token with remove strips auth
+test_case "proxy_update_bearer_token with remove strips Bearer auth from site"
+proxy_update_bearer_token "llm-site.example.com" "--remove"
+conf_no_auth="$(cat "$NGINX_CONF_DIR/llm-site.example.com.conf")"
+assert_not_contains "$conf_no_auth" "Bearer Token 访问鉴权" "Bearer auth block removed from config"
+assert_file_not_exists "$NGX_TOKENS_DIR/llm-site.example.com.token" "Token file removed"
+
 test_summary
