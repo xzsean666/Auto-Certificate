@@ -92,6 +92,8 @@ ngx-cert-manager - Nginx & Let's Encrypt 一体化运维管理套件 v${NGX_CERT
       --https-port <port>   内部 HTTPS 监听端口 (默认: auto 自动识别分流架构或标准 443)
       --auth-bearer [token] 为无鉴权后端添加 Bearer 鉴权 (若不传或指定 auto 则自动生成高强度 Token 存入 .tokens/)
       --gen-bearer          自动生成高强度 Bearer Token 鉴权并保存至 .tokens/
+      --optimize-llm, --llm 启用 LLM/AI 深度推理与 SSE 实时流式专项优化 (自动 600s 超时、关闭响应/请求缓冲、tcp_nodelay)
+      --timeout <duration>  自定义代理超时时长 (例如: 600s, 1200s, 默认普通60s/LLM 600s)
     site list               列出所有受管反向代理站点
     site get                查看指定站点的 Nginx 配置文件
       --domain <domain>     目标域名
@@ -217,6 +219,8 @@ cmd_site() {
             local cf_token=""
             local https_port=""
             local bearer_token=""
+            local optimize_llm=0
+            local custom_timeout=""
 
             while [ $# -gt 0 ]; do
                 case "$1" in
@@ -260,11 +264,27 @@ cmd_site() {
                         bearer_token="auto"
                         shift
                         ;;
+                    --optimize-llm|--llm-optimize|--llm|--ai)
+                        optimize_llm=1
+                        shift
+                        ;;
+                    --no-optimize-llm|--no-llm)
+                        optimize_llm=0
+                        shift
+                        ;;
+                    --timeout)
+                        custom_timeout="$2"
+                        shift 2
+                        ;;
+                    --timeout=*)
+                        custom_timeout="${1#*=}"
+                        shift
+                        ;;
                     *) shift ;;
                 esac
             done
 
-            proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled" "$cert_mode" "$cf_token" "$https_port" "$bearer_token"
+            proxy_add_site "$domain" "$upstream" "$email" "$hsts" "$body_size" "$ws" "$skip_dns" "$staging" "1" "$ssl_enabled" "$cert_mode" "$cf_token" "$https_port" "$bearer_token" "$optimize_llm" "$custom_timeout"
             ;;
         *)
             ui_error "未知的 site 操作: $action"
@@ -484,6 +504,11 @@ tui_wizard_add_site() {
         [ -z "$auth_bearer" ] && auth_bearer="auto"
     fi
 
+    local optimize_llm=0
+    if ui_confirm "10. 后端是否为 LLM / AI 大模型服务 (自动调优 600s 超时、关闭响应/请求缓冲、启用 SSE 低延迟流式传输)?" "N"; then
+        optimize_llm=1
+    fi
+
     echo ""
     ui_info "配置概要确认:"
     echo "  - 域名: $domain"
@@ -501,11 +526,16 @@ tui_wizard_add_site() {
     else
         echo "  - Bearer 鉴权: 未启用 (直接透传)"
     fi
+    if [ "$optimize_llm" -eq 1 ]; then
+        echo "  - LLM 专项优化: 已启用 (600s 超时 / 关闭请求与响应缓冲 / SSE 低延迟流式)"
+    else
+        echo "  - LLM 专项优化: 未启用 (标准 HTTP 缓冲)"
+    fi
     [ "$enable_ssl" -eq 1 ] && echo "  - 环境: $([ "$staging" -eq 1 ] && echo "Staging 沙箱" || echo "生产环境")"
     echo ""
 
     if ui_confirm "确认立即开始自动化部署?" "Y"; then
-        proxy_add_site "$domain" "$upstream" "$email" "$enable_hsts" "$body_size" "$enable_ws" "0" "$staging" "0" "$enable_ssl" "$cert_mode" "$cf_token" "" "$auth_bearer"
+        proxy_add_site "$domain" "$upstream" "$email" "$enable_hsts" "$body_size" "$enable_ws" "0" "$staging" "0" "$enable_ssl" "$cert_mode" "$cf_token" "" "$auth_bearer" "$optimize_llm"
     else
         ui_warn "已取消部署。"
     fi

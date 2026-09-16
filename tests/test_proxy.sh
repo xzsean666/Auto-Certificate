@@ -224,4 +224,37 @@ assert_contains "$gen_tok" "sk-" "Generated token has sk- prefix"
 conf_auto="$(cat "$NGINX_CONF_DIR/auto-bearer.example.com.conf")"
 assert_contains "$conf_auto" "$gen_tok" "Nginx config contains the auto-generated token"
 
+# Test 14: proxy_render_config and proxy_render_http_config with optimize_llm
+test_case "proxy_render_config with optimize_llm enables zero-buffering, 600s timeouts, and 100m body size"
+rendered_llm="$(proxy_render_config "llm-api.example.com" "127.0.0.1:11434" "/etc/ssl/cert.pem" "/etc/ssl/key.pem" "1" "" "1" "443" "sk-test" "1")"
+assert_contains "$rendered_llm" "LLM-Optimization: enabled" "SSL config header contains LLM-Optimization enabled"
+assert_contains "$rendered_llm" "proxy_buffering off;" "SSL config disables proxy_buffering"
+assert_contains "$rendered_llm" "proxy_request_buffering off;" "SSL config disables proxy_request_buffering"
+assert_contains "$rendered_llm" "tcp_nodelay on;" "SSL config enables tcp_nodelay"
+assert_contains "$rendered_llm" "proxy_read_timeout 600s;" "SSL config sets 600s read timeout"
+assert_contains "$rendered_llm" "proxy_send_timeout 600s;" "SSL config sets 600s send timeout"
+assert_contains "$rendered_llm" "client_max_body_size 100m;" "SSL config defaults to 100m client body size in LLM mode"
+
+# HTTP mode with LLM optimization
+rendered_http_llm="$(proxy_render_http_config "llm-http.example.com" "127.0.0.1:10001" "" "1" "" "1")"
+assert_contains "$rendered_http_llm" "LLM-Optimization: enabled" "HTTP config contains LLM-Optimization enabled"
+assert_contains "$rendered_http_llm" "proxy_buffering off;" "HTTP config disables proxy_buffering"
+assert_contains "$rendered_http_llm" "proxy_read_timeout 600s;" "HTTP config sets 600s read timeout"
+
+# Test 15: proxy_render_config with optimize_llm=0 uses standard buffering and 60s timeouts
+test_case "proxy_render_config without optimize_llm preserves standard buffering and 60s timeouts"
+rendered_std="$(proxy_render_config "standard.example.com" "127.0.0.1:3000" "/etc/ssl/cert.pem" "/etc/ssl/key.pem" "1" "50m" "1" "443" "" "0")"
+assert_contains "$rendered_std" "LLM-Optimization: disabled" "Config header contains LLM-Optimization disabled"
+assert_contains "$rendered_std" "proxy_buffering on;" "Standard config keeps proxy_buffering on"
+assert_contains "$rendered_std" "proxy_read_timeout 60s;" "Standard config keeps 60s read timeout"
+
+# Test 16: proxy_add_site with optimize_llm and custom timeout
+test_case "proxy_add_site applies LLM optimization and custom timeout"
+proxy_add_site "llm-site.example.com" "127.0.0.1:10001" "admin@example.com" "1" "" "1" "0" "1" "1" "1" "dns_cf" "token_xyz" "443" "auto" "1" "1200s"
+assert_file_exists "$NGINX_CONF_DIR/llm-site.example.com.conf" "LLM site conf created"
+conf_llm="$(cat "$NGINX_CONF_DIR/llm-site.example.com.conf")"
+assert_contains "$conf_llm" "LLM-Optimization: enabled" "Site conf contains LLM-Optimization enabled"
+assert_contains "$conf_llm" "proxy_buffering off;" "Site conf contains proxy_buffering off"
+assert_contains "$conf_llm" "proxy_read_timeout 1200s;" "Site conf respects custom 1200s timeout"
+
 test_summary

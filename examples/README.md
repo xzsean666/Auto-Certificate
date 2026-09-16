@@ -14,6 +14,7 @@
 | [**`04_unix_socket_upstream.sh`**](file:///home/sean/git/Auto-Certificate/examples/04_unix_socket_upstream.sh) | **Unix Domain Socket 高性能后端** | `unix:/run/app.sock:` 本地高性能进程通信 |
 | [**`05_auto_renew_management.sh`**](file:///home/sean/git/Auto-Certificate/examples/05_auto_renew_management.sh) | **自动续期守护监控与演练** | Systemd Timer 状态、Dry-run 演练、审计日志 |
 | [**`06_bearer_auth_proxy.sh`**](file:///home/sean/git/Auto-Certificate/examples/06_bearer_auth_proxy.sh) | **无鉴权后端添加 Nginx Bearer 鉴权** | `--auth-bearer <token>`，保护 Ollama / 本地微服务 |
+| [**`07_llm_ai_optimized_proxy.sh`**](file:///home/sean/git/Auto-Certificate/examples/07_llm_ai_optimized_proxy.sh) | **大模型 (LLM/AI) 专项反代与流式优化** | `--optimize-llm`，600s超时 + 关闭缓冲 + SSE 流式秒推 |
 
 ---
 
@@ -76,6 +77,15 @@
 - **多 Token 支持**：支持传入逗号分隔的多组 Token（如 `"token1, token2"`）。
 - **CORS 预检支持**：自动放行浏览器 `OPTIONS` 跨域预检请求，避免跨域 Web 前端调用因鉴权报错。
 - **未授权拦截**：未携带或携带错误凭证的请求直接由 Nginx 响应 `401 Unauthorized`，完全阻断流量打到后端服务。
+
+### 5. 反向代理大语言模型 (LLM/AI) 为什么需要专项优化 (`--optimize-llm`)？
+普通反向代理配置主要面向传统静态网站或普通 Web API，而大语言模型具有两大显著特征：
+1. **深度推理耗时长（容易 504）**：
+   - 带有思考链的模型（如 `qwen3.5`、`deepseek-r1`）在非流式调用或复杂推理时往往需要生成上千个 tokens，耗时可达数分钟。若使用普通默认的 `60s` 超时，必定触发 `504 Gateway Time-out`。
+   - `--optimize-llm` 自动配置 `proxy_read_timeout 600s;` 和 `proxy_send_timeout 600s;`（10 分钟长连接保证）。
+2. **流式传输打字机效果（容易被 Nginx 缓冲阻断）**：
+   - 客户端依赖 Server-Sent Events (SSE) 逐字打字推送。如果开启了 Nginx 代理缓冲（`proxy_buffering on`），Nginx 会将输出积攒到 8KB 满之后才一次性冲刷给客户端，导致前端流式卡顿变成大段吐字。
+   - `--optimize-llm` 会彻底关闭缓冲（`proxy_buffering off;`、`proxy_request_buffering off;`、`tcp_nodelay on;`），实现真正的逐 Token 毫秒级打字机推送。
 
 ---
 

@@ -65,6 +65,33 @@ EOF
     echo "$auth_tmp"
 }
 
+# Helper: generate streaming & buffering directives into temporary file
+_proxy_create_streaming_snippet() {
+    local optimize_llm="$1"
+    local stream_tmp
+    stream_tmp="$(mktemp /tmp/ngx_stream_XXXXXX.conf 2>/dev/null || mktemp)"
+    if [ "$optimize_llm" = "1" ] || [ "$optimize_llm" = "true" ] || [ "$optimize_llm" = "--optimize-llm" ] || [ "$optimize_llm" = "--llm" ] || [ "$optimize_llm" = "llm" ]; then
+        cat << 'EOF' > "$stream_tmp"
+        # [LLM 深度优化] 关闭响应与请求缓冲，开启低延迟 SSE 流式输出与长推理支持
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding on;
+        tcp_nodelay on;
+        proxy_set_header X-Accel-Buffering no;
+EOF
+    else
+        cat << 'EOF' > "$stream_tmp"
+        # 标准反向代理缓冲优化
+        proxy_buffering on;
+        proxy_buffer_size 8k;
+        proxy_buffers 8 64k;
+        chunked_transfer_encoding on;
+EOF
+    fi
+    echo "$stream_tmp"
+}
+
 # 2. Render Nginx Reverse Proxy Configuration (SSL Mode)
 proxy_render_config() {
     local domain="$1"
@@ -72,10 +99,12 @@ proxy_render_config() {
     local cert_path="$3"
     local key_path="$4"
     local hsts="${5:-$DEFAULT_ENABLE_HSTS}"
-    local body_size="${6:-$DEFAULT_CLIENT_MAX_BODY_SIZE}"
+    local body_size="${6:-}"
     local ws="${7:-$DEFAULT_ENABLE_WEBSOCKET}"
     local custom_port="${8:-}"
     local bearer_token="${9:-}"
+    local optimize_llm="${10:-0}"
+    local custom_timeout="${11:-}"
 
     local https_port
     https_port="$(nginx_detect_https_port "$custom_port")"
@@ -120,11 +149,40 @@ proxy_render_config() {
         hsts_line='add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;'
     fi
 
+    # LLM optimization resolution
+    local is_llm=0
+    if [ "$optimize_llm" = "1" ] || [ "$optimize_llm" = "true" ] || [ "$optimize_llm" = "--optimize-llm" ] || [ "$optimize_llm" = "--llm" ] || [ "$optimize_llm" = "llm" ] || [ "$optimize_llm" = "ai" ] || [ "$optimize_llm" = "--ai" ]; then
+        is_llm=1
+    fi
+
+    local conn_timeout="${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}"
+    local send_timeout="${DEFAULT_PROXY_SEND_TIMEOUT:-60s}"
+    local read_timeout="${DEFAULT_PROXY_READ_TIMEOUT:-60s}"
+    local llm_header="# LLM-Optimization: disabled"
+
+    if [ "$is_llm" -eq 1 ]; then
+        send_timeout="${DEFAULT_LLM_PROXY_SEND_TIMEOUT:-600s}"
+        read_timeout="${DEFAULT_LLM_PROXY_READ_TIMEOUT:-600s}"
+        llm_header="# LLM-Optimization: enabled (SSE streaming, zero-buffering & 600s timeouts)"
+        if [ -z "$body_size" ] || [ "$body_size" = "${DEFAULT_CLIENT_MAX_BODY_SIZE:-50m}" ]; then
+            body_size="${DEFAULT_LLM_CLIENT_MAX_BODY_SIZE:-100m}"
+        fi
+    else
+        body_size="${body_size:-${DEFAULT_CLIENT_MAX_BODY_SIZE:-50m}}"
+    fi
+
+    if [ -n "$custom_timeout" ]; then
+        send_timeout="$custom_timeout"
+        read_timeout="$custom_timeout"
+    fi
+
     # Bearer Auth snippet file
     local auth_snippet_file=""
     if [ -n "$bearer_token" ]; then
         auth_snippet_file="$(_proxy_create_bearer_auth_snippet "$bearer_token")"
     fi
+    local stream_snippet_file
+    stream_snippet_file="$(_proxy_create_streaming_snippet "$is_llm")"
 
     # Read template and substitute variables safely
     local rendered
@@ -133,6 +191,7 @@ proxy_render_config() {
             -e "s|{{DOMAIN}}|${domain}|g" \
             -e "s|{{CREATED_AT}}|${now_str}|g" \
             -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+            -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
             -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
             -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
             -e "s|{{SSL_LISTEN_443}}|${ssl_listen_443}|g" \
@@ -142,16 +201,19 @@ proxy_render_config() {
             -e "s|{{SSL_KEY_PATH}}|${key_path}|g" \
             -e "s|{{HSTS_HEADER}}|${hsts_line}|g" \
             -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
-            -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-600s}|g" \
-            -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-600s}|g" \
-            "$tpl_file" | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}")"
-        rm -f "$auth_snippet_file"
+            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
+            -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
+            -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
+            "$tpl_file" \
+            | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}" \
+            | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
+        rm -f "$auth_snippet_file" "$stream_snippet_file"
     else
         rendered="$(sed \
             -e "s|{{DOMAIN}}|${domain}|g" \
             -e "s|{{CREATED_AT}}|${now_str}|g" \
             -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+            -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
             -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
             -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
             -e "s|{{SSL_LISTEN_443}}|${ssl_listen_443}|g" \
@@ -161,11 +223,13 @@ proxy_render_config() {
             -e "s|{{SSL_KEY_PATH}}|${key_path}|g" \
             -e "s|{{HSTS_HEADER}}|${hsts_line}|g" \
             -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
-            -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-600s}|g" \
-            -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-600s}|g" \
+            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
+            -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
+            -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
             -e "/{{BEARER_AUTH_DIRECTIVE}}/d" \
-            "$tpl_file")"
+            "$tpl_file" \
+            | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
+        rm -f "$stream_snippet_file"
     fi
     printf "%s\n" "$rendered"
 }
@@ -174,9 +238,11 @@ proxy_render_config() {
 proxy_render_http_config() {
     local domain="$1"
     local upstream="$2"
-    local body_size="${3:-$DEFAULT_CLIENT_MAX_BODY_SIZE}"
+    local body_size="${3:-}"
     local ws="${4:-$DEFAULT_ENABLE_WEBSOCKET}"
     local bearer_token="${5:-}"
+    local optimize_llm="${6:-0}"
+    local custom_timeout="${7:-}"
 
     local tpl_dir="${NGX_TEMPLATES_DIR:-$_SCRIPT_DIR/../templates}"
     local tpl_file="${tpl_dir}/proxy-http.conf.tpl"
@@ -196,10 +262,39 @@ proxy_render_http_config() {
         ipv6_80="listen [::]:80;"
     fi
 
+    # LLM optimization resolution
+    local is_llm=0
+    if [ "$optimize_llm" = "1" ] || [ "$optimize_llm" = "true" ] || [ "$optimize_llm" = "--optimize-llm" ] || [ "$optimize_llm" = "--llm" ] || [ "$optimize_llm" = "llm" ] || [ "$optimize_llm" = "ai" ] || [ "$optimize_llm" = "--ai" ]; then
+        is_llm=1
+    fi
+
+    local conn_timeout="${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}"
+    local send_timeout="${DEFAULT_PROXY_SEND_TIMEOUT:-60s}"
+    local read_timeout="${DEFAULT_PROXY_READ_TIMEOUT:-60s}"
+    local llm_header="# LLM-Optimization: disabled"
+
+    if [ "$is_llm" -eq 1 ]; then
+        send_timeout="${DEFAULT_LLM_PROXY_SEND_TIMEOUT:-600s}"
+        read_timeout="${DEFAULT_LLM_PROXY_READ_TIMEOUT:-600s}"
+        llm_header="# LLM-Optimization: enabled (SSE streaming, zero-buffering & 600s timeouts)"
+        if [ -z "$body_size" ] || [ "$body_size" = "${DEFAULT_CLIENT_MAX_BODY_SIZE:-50m}" ]; then
+            body_size="${DEFAULT_LLM_CLIENT_MAX_BODY_SIZE:-100m}"
+        fi
+    else
+        body_size="${body_size:-${DEFAULT_CLIENT_MAX_BODY_SIZE:-50m}}"
+    fi
+
+    if [ -n "$custom_timeout" ]; then
+        send_timeout="$custom_timeout"
+        read_timeout="$custom_timeout"
+    fi
+
     local auth_snippet_file=""
     if [ -n "$bearer_token" ]; then
         auth_snippet_file="$(_proxy_create_bearer_auth_snippet "$bearer_token")"
     fi
+    local stream_snippet_file
+    stream_snippet_file="$(_proxy_create_streaming_snippet "$is_llm")"
 
     local rendered
     if [ -n "$auth_snippet_file" ] && [ -f "$auth_snippet_file" ]; then
@@ -207,27 +302,33 @@ proxy_render_http_config() {
             -e "s|{{DOMAIN}}|${domain}|g" \
             -e "s|{{CREATED_AT}}|${now_str}|g" \
             -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+            -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
             -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
             -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
             -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
-            -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-600s}|g" \
-            -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-600s}|g" \
-            "$tpl_file" | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}")"
-        rm -f "$auth_snippet_file"
+            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
+            -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
+            -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
+            "$tpl_file" \
+            | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}" \
+            | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
+        rm -f "$auth_snippet_file" "$stream_snippet_file"
     else
         rendered="$(sed \
             -e "s|{{DOMAIN}}|${domain}|g" \
             -e "s|{{CREATED_AT}}|${now_str}|g" \
             -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+            -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
             -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
             -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
             -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${DEFAULT_PROXY_CONNECT_TIMEOUT:-60s}|g" \
-            -e "s|{{PROXY_SEND_TIMEOUT}}|${DEFAULT_PROXY_SEND_TIMEOUT:-600s}|g" \
-            -e "s|{{PROXY_READ_TIMEOUT}}|${DEFAULT_PROXY_READ_TIMEOUT:-600s}|g" \
+            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
+            -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
+            -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
             -e "/{{BEARER_AUTH_DIRECTIVE}}/d" \
-            "$tpl_file")"
+            "$tpl_file" \
+            | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
+        rm -f "$stream_snippet_file"
     fi
     printf "%s\n" "$rendered"
 }
@@ -299,7 +400,7 @@ proxy_add_site() {
     local upstream="$2"
     local email="${3:-}"
     local hsts="${4:-1}"
-    local body_size="${5:-50m}"
+    local body_size="${5:-}"
     local ws="${6:-1}"
     local skip_dns="${7:-0}"
     local staging="${8:-0}"
@@ -309,6 +410,8 @@ proxy_add_site() {
     local cf_token="${12:-}"
     local custom_https_port="${13:-}"
     local bearer_token="${14:-}"
+    local optimize_llm="${15:-0}"
+    local custom_timeout="${16:-}"
 
     if [ -z "$domain" ] || [ -z "$upstream" ]; then
         ui_error "必须指定域名 (--domain) 与上游地址 (--upstream)。"
@@ -367,6 +470,11 @@ proxy_add_site() {
         fi
     fi
 
+    local is_llm=0
+    if [ "$optimize_llm" = "1" ] || [ "$optimize_llm" = "true" ] || [ "$optimize_llm" = "--optimize-llm" ] || [ "$optimize_llm" = "--llm" ] || [ "$optimize_llm" = "llm" ] || [ "$optimize_llm" = "ai" ] || [ "$optimize_llm" = "--ai" ]; then
+        is_llm=1
+    fi
+
     ui_section "开始配置反向代理站点: ${domain}"
 
     # Bootstrap Nginx global environment if needed
@@ -376,7 +484,7 @@ proxy_add_site() {
     if [ "$ssl_enabled" = "0" ] || [ "$ssl_enabled" = "false" ] || [ "$ssl_enabled" = "--no-ssl" ] || [ "$ssl_enabled" = "--http-only" ]; then
         ui_info "配置模式: 纯 HTTP 80 端口反向代理 (适用于 Cloudflare 边缘 SSL / 内网转发)..."
         local rendered_http
-        rendered_http="$(proxy_render_http_config "$domain" "$upstream" "$body_size" "$ws" "$bearer_token")"
+        rendered_http="$(proxy_render_http_config "$domain" "$upstream" "$body_size" "$ws" "$bearer_token" "$is_llm" "$custom_timeout")"
 
         if proxy_apply_site_config "$domain" "$rendered_http"; then
             ui_section "🎉 站点 ${domain} (HTTP 模式) 配置完成"
@@ -385,6 +493,9 @@ proxy_add_site() {
             if [ -n "$bearer_token" ]; then
                 ui_info "鉴权保护: 已启用 Bearer Token 访问控制 (HTTP 401 拦截未授权请求)"
                 [ -n "$token_file_saved" ] && ui_info "凭证存储: Token 密钥已保存在 ${token_file_saved} (已加入 .gitignore，权限: 600)"
+            fi
+            if [ "$is_llm" -eq 1 ]; then
+                ui_info "大模型优化: 已启用 LLM/AI 深度推理专项优化 (600s 超时 / 关闭请求与响应缓冲 / SSE 实时流式)"
             fi
             ui_info "Nginx 配置文件: ${NGINX_CONF_DIR:-/etc/nginx/conf.d}/${domain}.conf"
             return 0
@@ -489,7 +600,7 @@ EOF
     fi
 
     local rendered
-    rendered="$(proxy_render_config "$domain" "$upstream" "$cert_path" "$key_path" "$hsts" "$body_size" "$ws" "$effective_https_port" "$bearer_token")"
+    rendered="$(proxy_render_config "$domain" "$upstream" "$cert_path" "$key_path" "$hsts" "$body_size" "$ws" "$effective_https_port" "$bearer_token" "$is_llm" "$custom_timeout")"
 
     if proxy_apply_site_config "$domain" "$rendered"; then
         ui_section "🎉 站点 ${domain} 配置完成"
@@ -498,6 +609,9 @@ EOF
         if [ -n "$bearer_token" ]; then
             ui_info "鉴权保护: 已启用 Bearer Token 访问控制 (HTTP 401 拦截未授权请求)"
             [ -n "$token_file_saved" ] && ui_info "凭证存储: Token 密钥已保存在 ${token_file_saved} (已加入 .gitignore，权限: 600)"
+        fi
+        if [ "$is_llm" -eq 1 ]; then
+            ui_info "大模型优化: 已启用 LLM/AI 深度推理专项优化 (600s 超时 / 关闭请求与响应缓冲 / SSE 实时流式)"
         fi
         ui_info "SSL 证书: ${cert_path}"
         ui_info "Nginx 配置文件: ${NGINX_CONF_DIR:-/etc/nginx/conf.d}/${domain}.conf"
@@ -520,8 +634,8 @@ proxy_list_sites() {
     fi
 
     local site_count=0
-    printf "%-28s | %-26s | %-12s | %-8s\n" "域名 / 虚拟主机" "上游目标 (Upstream)" "SSL 状态" "HSTS"
-    echo "--------------------------------------------------------------------------------"
+    printf "%-26s | %-24s | %-12s | %-6s | %-8s\n" "域名 / 虚拟主机" "上游目标 (Upstream)" "SSL 状态" "HSTS" "LLM优化"
+    echo "-----------------------------------------------------------------------------------------"
 
     for f in "$conf_dir"/*.conf; do
         if [ -f "$f" ]; then
@@ -536,6 +650,7 @@ proxy_list_sites() {
             local upstream="N/A"
             local ssl_status="未配置"
             local hsts_status="关闭"
+            local llm_status="标准"
 
             # Parse upstream from proxy_pass
             local pass_line
@@ -570,15 +685,20 @@ proxy_list_sites() {
                 hsts_status="开启"
             fi
 
+            # Check LLM Optimization
+            if grep -q "LLM-Optimization: enabled" "$f" 2>/dev/null || grep -q "proxy_buffering off" "$f" 2>/dev/null; then
+                llm_status="🤖 已优化"
+            fi
+
             site_count=$((site_count + 1))
-            printf "%-28s | %-26s | %-12s | %-8s\n" "$domain" "$upstream" "$ssl_status" "$hsts_status"
+            printf "%-26s | %-24s | %-12s | %-6s | %-8s\n" "$domain" "$upstream" "$ssl_status" "$hsts_status" "$llm_status"
         fi
     done
 
     if [ "$site_count" -eq 0 ]; then
         echo "当前暂无配置的反向代理站点。"
     else
-        echo "--------------------------------------------------------------------------------"
+        echo "-----------------------------------------------------------------------------------------"
         echo "共计 ${site_count} 个受管反向代理站点。"
     fi
 }
@@ -597,6 +717,11 @@ proxy_get_site() {
     if [ -f "$conf_file" ]; then
         ui_section "站点配置文件: $conf_file"
         cat "$conf_file"
+
+        if grep -q "LLM-Optimization: enabled" "$conf_file" 2>/dev/null || grep -q "proxy_buffering off" "$conf_file" 2>/dev/null; then
+            echo ""
+            ui_info "【AI / LLM 专属优化状态】: 已启用 (600s 超时 / 关闭请求与响应缓冲 / 低延迟 SSE 流式)"
+        fi
 
         local tokens_dir="${NGX_TOKENS_DIR:-${NGX_APP_ROOT:-$_SCRIPT_DIR/..}/.tokens}"
         local token_file="${tokens_dir}/${domain}.token"

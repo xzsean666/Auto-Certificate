@@ -136,6 +136,36 @@ sudo ngx-cert site add \
 
 ---
 
+### 场景 9：大语言模型 (LLM/AI) 专项反向代理 (`--optimize-llm`)
+> **说明**：当反向代理本地或内网的大模型服务（例如 Ollama、vLLM、LocalAI、Open-WebUI、Text-Generation-WebUI 等 OpenAI 兼容后端）时，大模型在进行深度思考（Deep Thinking）或长文本生成时耗时长（可能耗时 1~10 分钟），且客户端通常需要使用 SSE（Server-Sent Events）逐字流式打字输出。若使用普通反代配置，极易发生 `504 Gateway Time-out` 或流式打字被 Nginx 缓冲区延迟截断。
+>
+> 启用 `--optimize-llm`（或简写 `--llm`）将自动应用深度优化配置：
+> 1. **超长超时保障**：自动配置 `proxy_read_timeout 600s; proxy_send_timeout 600s;`（亦可通过 `--timeout <duration>` 自定义），杜绝长推理 504 错误。
+> 2. **零缓冲实时流式**：配置 `proxy_buffering off; proxy_request_buffering off; proxy_cache off; chunked_transfer_encoding on;`，保障 SSE 逐 Token 秒级推送到前端打字机。
+> 3. **低延迟网络加速**：开启 `tcp_nodelay on;`，同时向前端与下游代理下发 `X-Accel-Buffering no;`。
+> 4. **大上下文与多模态**：自动提升请求体限制为 `client_max_body_size 100m;`。
+
+```bash
+# 模式 A: 纯 HTTP / Cloudflare Flexible 边缘代理 + Bearer 自动鉴权 + LLM 深度优化
+sudo ngx-cert site add \
+    --domain ai.example.com \
+    --upstream 127.0.0.1:10001 \
+    --no-ssl \
+    --auth-bearer \
+    --optimize-llm
+
+# 模式 B: 完整 HTTPS + Let's Encrypt 证书 + 自定义超时 + Bearer 鉴权
+sudo ngx-cert site add \
+    --domain ai.example.com \
+    --upstream 127.0.0.1:11434 \
+    --email admin@example.com \
+    --optimize-llm \
+    --timeout 1200s \
+    --auth-bearer
+```
+
+---
+
 ## 二、什么是 Unix Domain Socket 反代 (示例 04 原理解析)
 
 在 Linux 环境下，当你的后端程序（如 Python FastAPI / Flask / Django、Node.js、PHP-FPM、Go）与 Nginx 运行在**同一台物理机/云服务器**上时，反向代理有两种通信方式：

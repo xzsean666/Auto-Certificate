@@ -47,6 +47,8 @@ assert_contains "$help_out" "--ssh-key" "Help contains --ssh-key option"
 assert_contains "$help_out" "--dns-cf" "Help contains --dns-cf option"
 assert_contains "$help_out" "--auth-bearer" "Help contains --auth-bearer option"
 assert_contains "$help_out" "--gen-bearer" "Help contains --gen-bearer option"
+assert_contains "$help_out" "--optimize-llm" "Help contains --optimize-llm option"
+assert_contains "$help_out" "--timeout" "Help contains --timeout option"
 
 # Test 3: site list subcommand
 test_case "ngx-cert-manager site list runs successfully"

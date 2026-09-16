@@ -2,6 +2,7 @@
 # Managed by ngx-cert-manager: {{DOMAIN}} (HTTP-Only / Cloudflare Proxy)
 # Created at: {{CREATED_AT}}
 # Upstream Target: {{UPSTREAM_TARGET}}
+{{LLM_OPT_HEADER}}
 # ==============================================================================
 
 server {
@@ -43,14 +44,12 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
 
-        # 超时配置 (针对长连接及 AI/LLM 流式推理长耗时进行深度调优)
+        # 超时配置
         proxy_connect_timeout {{PROXY_CONNECT_TIMEOUT}};
         proxy_send_timeout {{PROXY_SEND_TIMEOUT}};
         proxy_read_timeout {{PROXY_READ_TIMEOUT}};
 
-        # 缓冲与流式传输优化 (避免 SSE 流式输出被 Nginx 缓冲截断或延迟)
-        proxy_buffering off;
-        proxy_cache off;
-        chunked_transfer_encoding on;
+        # 缓冲与流式传输优化
+{{PROXY_STREAMING_DIRECTIVES}}
     }
 }
