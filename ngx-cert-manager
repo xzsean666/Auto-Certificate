@@ -594,7 +594,7 @@ tui_wizard_add_site() {
     fi
 
     local optimize_llm=0
-    if ui_confirm "10. 后端是否为 LLM / AI 大模型服务 (自动调优 600s 超时、关闭响应/请求缓冲、启用 SSE 低延迟流式传输)?" "N"; then
+    if ui_confirm "10. 后端是否为 LLM / AI 大模型服务 (自动调优 600s 超时、关闭缓冲、SSE流式，以及 Lua 自动注入 reasoning_effort 极速直出)?" "N"; then
         optimize_llm=1
     fi
 
@@ -616,7 +616,7 @@ tui_wizard_add_site() {
         echo "  - Bearer 鉴权: 未启用 (直接透传)"
     fi
     if [ "$optimize_llm" -eq 1 ]; then
-        echo "  - LLM 专项优化: 已启用 (600s 超时 / 关闭请求与响应缓冲 / SSE 低延迟流式)"
+        echo "  - LLM 专项优化: 已启用 (600s 超时 / 关闭请求与响应缓冲 / SSE 低延迟流式 / Lua 零思考直出)"
     else
         echo "  - LLM 专项优化: 未启用 (标准 HTTP 缓冲)"
     fi

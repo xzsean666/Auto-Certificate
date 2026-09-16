@@ -77,6 +77,24 @@ nginx_supports_http2_directive() {
     fi
 }
 
+# Check if current Nginx has Lua module support (lua_nginx_module / OpenResty)
+nginx_supports_lua() {
+    if [ "${FORCE_NGINX_LUA:-}" = "1" ] || [ "${FORCE_NGINX_LUA:-}" = "true" ]; then
+        return 0
+    fi
+    if [ "${FORCE_NGINX_LUA:-}" = "0" ] || [ "${FORCE_NGINX_LUA:-}" = "false" ]; then
+        return 1
+    fi
+
+    local bin="${NGINX_BIN:-nginx}"
+    if command -v "$bin" >/dev/null 2>&1; then
+        if "$bin" -V 2>&1 | grep -Eq 'lua_nginx_module|ngx_http_lua_module|ngx_devel_kit|openresty'; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 # 3. Check if Nginx is actively running
 nginx_is_running() {
     if [ "${EUID:-$(id -u)}" -eq 0 ] && command -v systemctl >/dev/null 2>&1 && [ -d "/run/systemd/system" ]; then

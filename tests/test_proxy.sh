@@ -37,8 +37,8 @@ mkdir -p "$mock_bin_dir"
 
 cat << 'EOF' > "$mock_bin_dir/nginx"
 #!/usr/bin/env bash
-if [ "$1" = "-v" ]; then
-    echo "nginx version: nginx/1.26.0" >&2
+if [ "$1" = "-v" ] || [ "$1" = "-V" ]; then
+    echo "nginx version: nginx/1.26.0 (built with lua_nginx_module)" >&2
     exit 0
 fi
 if [ "$1" = "-t" ]; then
@@ -234,12 +234,15 @@ assert_contains "$rendered_llm" "tcp_nodelay on;" "SSL config enables tcp_nodela
 assert_contains "$rendered_llm" "proxy_read_timeout 600s;" "SSL config sets 600s read timeout"
 assert_contains "$rendered_llm" "proxy_send_timeout 600s;" "SSL config sets 600s send timeout"
 assert_contains "$rendered_llm" "client_max_body_size 100m;" "SSL config defaults to 100m client body size in LLM mode"
+assert_contains "$rendered_llm" "access_by_lua_block" "SSL config contains Lua intercept block"
+assert_contains "$rendered_llm" 'reasoning_effort' "SSL config contains reasoning_effort injection"
 
 # HTTP mode with LLM optimization
 rendered_http_llm="$(proxy_render_http_config "llm-http.example.com" "127.0.0.1:10001" "" "1" "" "1")"
 assert_contains "$rendered_http_llm" "LLM-Optimization: enabled" "HTTP config contains LLM-Optimization enabled"
 assert_contains "$rendered_http_llm" "proxy_buffering off;" "HTTP config disables proxy_buffering"
 assert_contains "$rendered_http_llm" "proxy_read_timeout 600s;" "HTTP config sets 600s read timeout"
+assert_contains "$rendered_http_llm" "access_by_lua_block" "HTTP config contains Lua intercept block"
 
 # Test 15: proxy_render_config with optimize_llm=0 uses standard buffering and 60s timeouts
 test_case "proxy_render_config without optimize_llm preserves standard buffering and 60s timeouts"
@@ -247,6 +250,7 @@ rendered_std="$(proxy_render_config "standard.example.com" "127.0.0.1:3000" "/et
 assert_contains "$rendered_std" "LLM-Optimization: disabled" "Config header contains LLM-Optimization disabled"
 assert_contains "$rendered_std" "proxy_buffering on;" "Standard config keeps proxy_buffering on"
 assert_contains "$rendered_std" "proxy_read_timeout 60s;" "Standard config keeps 60s read timeout"
+assert_not_contains "$rendered_std" "access_by_lua_block" "Standard config does not contain Lua intercept block"
 
 # Test 16: proxy_add_site with optimize_llm and custom timeout
 test_case "proxy_add_site applies LLM optimization and custom timeout"
@@ -256,6 +260,7 @@ conf_llm="$(cat "$NGINX_CONF_DIR/llm-site.example.com.conf")"
 assert_contains "$conf_llm" "LLM-Optimization: enabled" "Site conf contains LLM-Optimization enabled"
 assert_contains "$conf_llm" "proxy_buffering off;" "Site conf contains proxy_buffering off"
 assert_contains "$conf_llm" "proxy_read_timeout 1200s;" "Site conf respects custom 1200s timeout"
+assert_contains "$conf_llm" "access_by_lua_block" "Site conf contains Lua intercept block"
 
 # Test 17: proxy_update_bearer_token updates existing bearer token
 test_case "proxy_update_bearer_token updates token in nginx config and .tokens file"

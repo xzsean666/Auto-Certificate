@@ -87,6 +87,9 @@
 2. **流式传输打字机效果（容易被 Nginx 缓冲阻断）**：
    - 客户端依赖 Server-Sent Events (SSE) 逐字打字推送。如果开启了 Nginx 代理缓冲（`proxy_buffering on`），Nginx 会将输出积攒到 8KB 满之后才一次性冲刷给客户端，导致前端流式卡顿变成大段吐字。
    - `--optimize-llm` 会彻底关闭缓冲（`proxy_buffering off;`、`proxy_request_buffering off;`、`tcp_nodelay on;`），实现真正的逐 Token 毫秒级打字机推送。
+3. **Lua 内存极速直出加速（避免未传参数时漫长思考）**：
+   - Ollama 等模型后端在 Modelfile 中无法强行写死客户端的思考链。如果客户端（如 ChatBox、第三方插件等）发起请求时未传 `reasoning_effort`，模型会默认进入漫长的深度思考阶段。
+   - 当检测到 Nginx 包含 Lua 模块时，系统会自动在 `proxy_pass` 前通过 `access_by_lua_block` 进行轻量内存改写（耗时 < 0.01ms）：若请求未传 `reasoning_effort` 且未开启 `"think": true`，自动在 JSON 请求体补齐 `"reasoning_effort": "none"`，实现无感秒级首字直出！
 
 ### 6. 后续如何根据域名更新、轮转或移除已有的 Bearer Token？
 **完全支持基于域名进行一键更新与平滑热生效！**

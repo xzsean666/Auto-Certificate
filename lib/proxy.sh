@@ -92,6 +92,26 @@ EOF
     echo "$stream_tmp"
 }
 
+# Helper: generate Lua intercept snippet for LLM fast response (inject reasoning_effort="none")
+_proxy_create_llm_lua_snippet() {
+    local lua_tmp
+    lua_tmp="$(mktemp /tmp/ngx_llm_lua_XXXXXX.conf 2>/dev/null || mktemp)"
+    cat << 'EOF' > "$lua_tmp"
+        # [LLM 深度优化] 默认关闭推理思考 (若客户端未传 reasoning_effort，自动注入 "none"，实现极速零思考直出)
+        access_by_lua_block {
+            ngx.req.read_body()
+            local body = ngx.req.get_body_data()
+            if body and string.find(body, "{", 1, true) then
+                if not string.find(body, "reasoning_effort", 1, true) and not string.find(body, '"think"%s*:%s*true') then
+                    local new_body = string.gsub(body, "{", "{\"reasoning_effort\":\"none\",", 1)
+                    ngx.req.set_body_data(new_body)
+                end
+            end
+        }
+EOF
+    echo "$lua_tmp"
+}
+
 # 2. Render Nginx Reverse Proxy Configuration (SSL Mode)
 proxy_render_config() {
     local domain="$1"
@@ -176,61 +196,56 @@ proxy_render_config() {
         read_timeout="$custom_timeout"
     fi
 
-    # Bearer Auth snippet file
+    # Snippets
     local auth_snippet_file=""
     if [ -n "$bearer_token" ]; then
         auth_snippet_file="$(_proxy_create_bearer_auth_snippet "$bearer_token")"
+    fi
+    local lua_snippet_file=""
+    if [ "$is_llm" -eq 1 ] && nginx_supports_lua; then
+        lua_snippet_file="$(_proxy_create_llm_lua_snippet)"
     fi
     local stream_snippet_file
     stream_snippet_file="$(_proxy_create_streaming_snippet "$is_llm")"
 
     # Read template and substitute variables safely
     local rendered
+    rendered="$(sed \
+        -e "s|{{DOMAIN}}|${domain}|g" \
+        -e "s|{{CREATED_AT}}|${now_str}|g" \
+        -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+        -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
+        -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
+        -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
+        -e "s|{{SSL_LISTEN_443}}|${ssl_listen_443}|g" \
+        -e "s|{{IPV6_LISTEN_443}}|${ipv6_443}|g" \
+        -e "s|{{HTTP2_DIRECTIVE}}|${http2_directive}|g" \
+        -e "s|{{SSL_CERT_PATH}}|${cert_path}|g" \
+        -e "s|{{SSL_KEY_PATH}}|${key_path}|g" \
+        -e "s|{{HSTS_HEADER}}|${hsts_line}|g" \
+        -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
+        -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
+        -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
+        -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
+        "$tpl_file")"
+
     if [ -n "$auth_snippet_file" ] && [ -f "$auth_snippet_file" ]; then
-        rendered="$(sed \
-            -e "s|{{DOMAIN}}|${domain}|g" \
-            -e "s|{{CREATED_AT}}|${now_str}|g" \
-            -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
-            -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
-            -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
-            -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
-            -e "s|{{SSL_LISTEN_443}}|${ssl_listen_443}|g" \
-            -e "s|{{IPV6_LISTEN_443}}|${ipv6_443}|g" \
-            -e "s|{{HTTP2_DIRECTIVE}}|${http2_directive}|g" \
-            -e "s|{{SSL_CERT_PATH}}|${cert_path}|g" \
-            -e "s|{{SSL_KEY_PATH}}|${key_path}|g" \
-            -e "s|{{HSTS_HEADER}}|${hsts_line}|g" \
-            -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
-            -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
-            -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
-            "$tpl_file" \
-            | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}" \
-            | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
-        rm -f "$auth_snippet_file" "$stream_snippet_file"
+        rendered="$(printf "%s\n" "$rendered" | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}")"
+        rm -f "$auth_snippet_file"
     else
-        rendered="$(sed \
-            -e "s|{{DOMAIN}}|${domain}|g" \
-            -e "s|{{CREATED_AT}}|${now_str}|g" \
-            -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
-            -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
-            -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
-            -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
-            -e "s|{{SSL_LISTEN_443}}|${ssl_listen_443}|g" \
-            -e "s|{{IPV6_LISTEN_443}}|${ipv6_443}|g" \
-            -e "s|{{HTTP2_DIRECTIVE}}|${http2_directive}|g" \
-            -e "s|{{SSL_CERT_PATH}}|${cert_path}|g" \
-            -e "s|{{SSL_KEY_PATH}}|${key_path}|g" \
-            -e "s|{{HSTS_HEADER}}|${hsts_line}|g" \
-            -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
-            -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
-            -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
-            -e "/{{BEARER_AUTH_DIRECTIVE}}/d" \
-            "$tpl_file" \
-            | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
-        rm -f "$stream_snippet_file"
+        rendered="$(printf "%s\n" "$rendered" | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/d")"
     fi
+
+    if [ -n "$lua_snippet_file" ] && [ -f "$lua_snippet_file" ]; then
+        rendered="$(printf "%s\n" "$rendered" | sed -e "/{{LLM_LUA_INTERCEPT_DIRECTIVE}}/{r $lua_snippet_file" -e "d}")"
+        rm -f "$lua_snippet_file"
+    else
+        rendered="$(printf "%s\n" "$rendered" | sed -e "/{{LLM_LUA_INTERCEPT_DIRECTIVE}}/d")"
+    fi
+
+    rendered="$(printf "%s\n" "$rendered" | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
+    rm -f "$stream_snippet_file"
+
     printf "%s\n" "$rendered"
 }
 
@@ -293,43 +308,44 @@ proxy_render_http_config() {
     if [ -n "$bearer_token" ]; then
         auth_snippet_file="$(_proxy_create_bearer_auth_snippet "$bearer_token")"
     fi
+    local lua_snippet_file=""
+    if [ "$is_llm" -eq 1 ] && nginx_supports_lua; then
+        lua_snippet_file="$(_proxy_create_llm_lua_snippet)"
+    fi
     local stream_snippet_file
     stream_snippet_file="$(_proxy_create_streaming_snippet "$is_llm")"
 
     local rendered
+    rendered="$(sed \
+        -e "s|{{DOMAIN}}|${domain}|g" \
+        -e "s|{{CREATED_AT}}|${now_str}|g" \
+        -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
+        -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
+        -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
+        -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
+        -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
+        -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
+        -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
+        -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
+        "$tpl_file")"
+
     if [ -n "$auth_snippet_file" ] && [ -f "$auth_snippet_file" ]; then
-        rendered="$(sed \
-            -e "s|{{DOMAIN}}|${domain}|g" \
-            -e "s|{{CREATED_AT}}|${now_str}|g" \
-            -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
-            -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
-            -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
-            -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
-            -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
-            -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
-            -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
-            "$tpl_file" \
-            | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}" \
-            | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
-        rm -f "$auth_snippet_file" "$stream_snippet_file"
+        rendered="$(printf "%s\n" "$rendered" | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/{r $auth_snippet_file" -e "d}")"
+        rm -f "$auth_snippet_file"
     else
-        rendered="$(sed \
-            -e "s|{{DOMAIN}}|${domain}|g" \
-            -e "s|{{CREATED_AT}}|${now_str}|g" \
-            -e "s|{{UPSTREAM_TARGET}}|${norm_upstream}|g" \
-            -e "s|{{LLM_OPT_HEADER}}|${llm_header}|g" \
-            -e "s|{{ACME_WEBROOT_DIR}}|${webroot}|g" \
-            -e "s|{{IPV6_LISTEN_80}}|${ipv6_80}|g" \
-            -e "s|{{CLIENT_MAX_BODY_SIZE}}|${body_size}|g" \
-            -e "s|{{PROXY_CONNECT_TIMEOUT}}|${conn_timeout}|g" \
-            -e "s|{{PROXY_SEND_TIMEOUT}}|${send_timeout}|g" \
-            -e "s|{{PROXY_READ_TIMEOUT}}|${read_timeout}|g" \
-            -e "/{{BEARER_AUTH_DIRECTIVE}}/d" \
-            "$tpl_file" \
-            | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
-        rm -f "$stream_snippet_file"
+        rendered="$(printf "%s\n" "$rendered" | sed -e "/{{BEARER_AUTH_DIRECTIVE}}/d")"
     fi
+
+    if [ -n "$lua_snippet_file" ] && [ -f "$lua_snippet_file" ]; then
+        rendered="$(printf "%s\n" "$rendered" | sed -e "/{{LLM_LUA_INTERCEPT_DIRECTIVE}}/{r $lua_snippet_file" -e "d}")"
+        rm -f "$lua_snippet_file"
+    else
+        rendered="$(printf "%s\n" "$rendered" | sed -e "/{{LLM_LUA_INTERCEPT_DIRECTIVE}}/d")"
+    fi
+
+    rendered="$(printf "%s\n" "$rendered" | sed -e "/{{PROXY_STREAMING_DIRECTIVES}}/{r $stream_snippet_file" -e "d}")"
+    rm -f "$stream_snippet_file"
+
     printf "%s\n" "$rendered"
 }
 
@@ -495,7 +511,11 @@ proxy_add_site() {
                 [ -n "$token_file_saved" ] && ui_info "凭证存储: Token 密钥已保存在 ${token_file_saved} (已加入 .gitignore，权限: 600)"
             fi
             if [ "$is_llm" -eq 1 ]; then
-                ui_info "大模型优化: 已启用 LLM/AI 深度推理专项优化 (600s 超时 / 关闭请求与响应缓冲 / SSE 实时流式)"
+                if nginx_supports_lua; then
+                    ui_info "大模型优化: 已启用 LLM/AI 深度推理专项优化 (600s 超时 / 关闭请求与响应缓冲 / SSE 实时流式 / Lua 零思考极速直出)"
+                else
+                    ui_info "大模型优化: 已启用 LLM/AI 深度推理专项优化 (600s 超时 / 关闭请求与响应缓冲 / SSE 实时流式)"
+                fi
             fi
             ui_info "Nginx 配置文件: ${NGINX_CONF_DIR:-/etc/nginx/conf.d}/${domain}.conf"
             return 0
@@ -611,7 +631,11 @@ EOF
             [ -n "$token_file_saved" ] && ui_info "凭证存储: Token 密钥已保存在 ${token_file_saved} (已加入 .gitignore，权限: 600)"
         fi
         if [ "$is_llm" -eq 1 ]; then
-            ui_info "大模型优化: 已启用 LLM/AI 深度推理专项优化 (600s 超时 / 关闭请求与响应缓冲 / SSE 实时流式)"
+            if nginx_supports_lua; then
+                ui_info "大模型优化: 已启用 LLM/AI 深度推理专项优化 (600s 超时 / 关闭请求与响应缓冲 / SSE 实时流式 / Lua 零思考极速直出)"
+            else
+                ui_info "大模型优化: 已启用 LLM/AI 深度推理专项优化 (600s 超时 / 关闭请求与响应缓冲 / SSE 实时流式)"
+            fi
         fi
         ui_info "SSL 证书: ${cert_path}"
         ui_info "Nginx 配置文件: ${NGINX_CONF_DIR:-/etc/nginx/conf.d}/${domain}.conf"
@@ -720,7 +744,11 @@ proxy_get_site() {
 
         if grep -q "LLM-Optimization: enabled" "$conf_file" 2>/dev/null || grep -q "proxy_buffering off" "$conf_file" 2>/dev/null; then
             echo ""
-            ui_info "【AI / LLM 专属优化状态】: 已启用 (600s 超时 / 关闭请求与响应缓冲 / 低延迟 SSE 流式)"
+            if grep -q "access_by_lua_block" "$conf_file" 2>/dev/null; then
+                ui_info "【AI / LLM 专属优化状态】: 已启用 (600s 超时 / 关闭缓冲 / 低延迟 SSE 流式 / Lua 极速零思考直出)"
+            else
+                ui_info "【AI / LLM 专属优化状态】: 已启用 (600s 超时 / 关闭请求与响应缓冲 / 低延迟 SSE 流式)"
+            fi
         fi
 
         local tokens_dir="${NGX_TOKENS_DIR:-${NGX_APP_ROOT:-$_SCRIPT_DIR/..}/.tokens}"

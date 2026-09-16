@@ -61,6 +61,7 @@ server {
     # 反向代理主要路由
     location / {
 {{BEARER_AUTH_DIRECTIVE}}
+{{LLM_LUA_INTERCEPT_DIRECTIVE}}
         proxy_pass {{UPSTREAM_TARGET}};
         proxy_http_version 1.1;
 

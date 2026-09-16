@@ -8,10 +8,12 @@
 #   - 结合 --auth-bearer 自动保护无鉴权后端，并保存密钥至 .tokens/。
 #
 # 优化项说明 (--optimize-llm):
-#   1. 超长超时支持: 自动设置 proxy_read_timeout 600s; proxy_send_timeout 600s;
+#   1. 超长超时支持: 自动设置 proxy_read_timeout 600s; proxy_send_timeout 600s; (杜绝长思考 504 Gateway Time-out)
 #   2. 零缓冲流式响应: proxy_buffering off; proxy_request_buffering off; chunked_transfer_encoding on;
 #   3. 低延迟网络加速: tcp_nodelay on; 并下发 X-Accel-Buffering no;
 #   4. 大上下文体支持: client_max_body_size 100m; (方便文档向量、图像等多模态上传)
+#   5. Lua 极速直出加速: 当 Nginx 包含 Lua 模块时，自动注入 access_by_lua_block；若请求未显式要求深度思考，
+#      自动注入 {"reasoning_effort":"none"}，让各类前端与第三方客户端无感零开销直出！
 # ==============================================================================
 
 set -euo pipefail

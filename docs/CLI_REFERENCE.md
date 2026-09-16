@@ -144,6 +144,7 @@ sudo ngx-cert site add \
 > 2. **零缓冲实时流式**：配置 `proxy_buffering off; proxy_request_buffering off; proxy_cache off; chunked_transfer_encoding on;`，保障 SSE 逐 Token 秒级推送到前端打字机。
 > 3. **低延迟网络加速**：开启 `tcp_nodelay on;`，同时向前端与下游代理下发 `X-Accel-Buffering no;`。
 > 4. **大上下文与多模态**：自动提升请求体限制为 `client_max_body_size 100m;`。
+> 5. **Lua 内存极速零思考直出**：若系统 Nginx 具备 Lua 模块支持（`lua_nginx_module`/OpenResty），会自动在 `proxy_pass` 前注入轻量内存拦截逻辑：当请求体未显式声明 `reasoning_effort` 且未开启 `"think": true` 时，自动给 JSON 补全 `"reasoning_effort": "none"`，让 Ollama 等后端模型直接以零思考极速输出首字（耗时 < 0.01ms），杜绝客户端未传参数时的卡顿等待。
 
 ```bash
 # 模式 A: 纯 HTTP / Cloudflare Flexible 边缘代理 + Bearer 自动鉴权 + LLM 深度优化
